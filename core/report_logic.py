@@ -1,3 +1,10 @@
+import json
+import logging
+
+# Предполагается, что get_ai_answer находится в этом модуле
+# Если он в другом файле, импорт нужно будет скорректировать
+from core.integrations.deepseek import get_ai_answer
+
 KNOWLEDGE_BASE = """Ты — HD | Lookism AI, элитный и беспристрастный looksmaxing-коуч. Твоя задача — провести детальный, брутально честный и объективный анализ лица пользователя, сравнивая его метрики с идеалами луксмаксинга.
 
 Твоя личность: Прямолинейный, объективный, как учёный. Без лишней "воды" и комплиментов. Только факты и цифры.
@@ -93,3 +100,29 @@ def create_report_prompt(metrics_json: str) -> tuple[str, str]:
     system_prompt = KNOWLEDGE_BASE
     user_prompt = f"Проанализируй следующие метрики и сгенерируй полный отчет на русском языке в соответствии с инструкциями из системного промпта. Будь брутально честным. Вот данные в формате JSON:\n\n{metrics_json}"
     return system_prompt, user_prompt
+
+async def generate_report_text(metrics: dict) -> str:
+    """
+    Генерирует полный текстовый отчет на основе метрик,
+    используя AI для анализа.
+    """
+    try:
+        # Преобразуем метрики в красивый JSON для промпта
+        metrics_json = json.dumps(metrics, indent=2, ensure_ascii=False)
+        system_prompt, user_prompt = create_report_prompt(metrics_json)
+        
+        logging.info("Отправка запроса к DeepSeek API для генерации отчета...")
+        ai_response = await get_ai_answer(system_prompt, user_prompt)
+        
+        # Принудительно удаляем все Markdown-звездочки для чистого вывода
+        cleaned_response = ai_response.replace('**', '').replace('*', '')
+        
+        logging.info("Отчет от AI успешно получен и очищен.")
+        return cleaned_response
+
+    except json.JSONDecodeError as e:
+        logging.error(f"Ошибка сериализации метрик в JSON: {e}")
+        return "Ошибка: не удалось подготовить данные для анализа."
+    except Exception as e:
+        logging.error(f"Непредвиденная ошибка при генерации отчета: {e}")
+        return "Ошибка: не удалось сгенерировать отчет."

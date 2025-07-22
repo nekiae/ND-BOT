@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import json
+import hmac
+import hashlib
 from typing import Dict, Any
 
 from aiogram import Bot, Dispatcher, F, types
@@ -12,8 +14,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 from dotenv import load_dotenv
 import httpx
+
+from core.payments import create_yookassa_payment
+from core.validators import validate_photo
+from core.lookism_metrics import get_looksmax_metrics
+from core.report_logic import generate_report_text, create_report_prompt
+from core.integrations.deepseek import get_ai_answer
 
 # --- Загрузка конфигурации ---
 load_dotenv()
@@ -22,6 +32,14 @@ ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(admin_id) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()] if ADMIN_IDS_STR else []
 FACEPP_API_KEY = os.getenv("FACEPP_API_KEY")
 FACEPP_API_SECRET = os.getenv("FACEPP_API_SECRET")
+YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
+
+# --- Настройки веб-сервера и вебхуков ---
+# Установите эти переменные в .env для работы в продакшене
+WEB_SERVER_HOST = os.getenv("WEB_SERVER_HOST", "127.0.0.1")
+WEB_SERVER_PORT = int(os.getenv("WEB_SERVER_PORT", 8080))
+BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL") # Например, https://your_domain.com
+PAYMENT_WEBHOOK_PATH = "/payment/webhook"
 
 # --- Настройка логирования ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -140,8 +158,8 @@ async def cmd_start(message: Message, state: FSMContext):
         await message.answer(welcome_text, reply_markup=keyboard)
 
 @dp.callback_query(F.data == "pay_subscription")
-async def process_payment_simulation(cq: CallbackQuery, state: FSMContext):
-    """Симулирует успешную оплату и активирует подписку."""
+async def process_payment_start(cq: CallbackQuery):
+    """Создает и отправляет пользователю ссылку на оплату."""
     user_id = cq.from_user.id
     user_db = get_user_data(user_id)
 
@@ -149,16 +167,20 @@ async def process_payment_simulation(cq: CallbackQuery, state: FSMContext):
         await cq.answer("У вас уже есть активная подписка.", show_alert=True)
         return
 
-    logging.info(f"💳 Пользователь {user_id} 'оплатил' подписку.")
-    user_db["is_active"] = True
-    user_db["analyses_left"] = 3
-    user_db["messages_left"] = 200
+    logging.info(f"💰 Пользователь {user_id} инициировал создание счета.")
+    payment = create_yookassa_payment(user_id, "999.00")
+
+    if payment and payment.confirmation and payment.confirmation.confirmation_url:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Перейти к оплате", url=payment.confirmation.confirmation_url)]
+        ])
+        await cq.message.answer(
+            "Ваша ссылка на оплату готова. Нажмите на кнопку ниже, чтобы перейти к оплате.",
+            reply_markup=keyboard
+        )
+    else:
+        await cq.message.answer("Произошла ошибка при создании счета. Попробуйте позже.")
     
-    await cq.message.edit_text(
-        "✅ <b>Подписка успешно активирована!</b>\n\n"
-        "Вам доступно <b>3</b> полных анализа и <b>200</b> сообщений ИИ-коучу.\n\n"
-        "Чтобы начать, используйте команду /analyze."
-    )
     await cq.answer()
 
 @dp.message(Command("analyze"))
@@ -341,13 +363,128 @@ async def chat_with_ai_handler(message: Message, state: FSMContext):
         await message.answer("❌ Произошла ошибка при обработке вашего вопроса. Попробуйте еще раз.")
 
 # --- Запуск бота ---
+async def give_subscription(user_id: int, bot: Bot):
+    """Выдает подписку пользователю."""
+    user_db = get_user_data(user_id)
+    user_db["is_active"] = True
+    user_db["analyses_left"] = 3
+    user_db["messages_left"] = 200
+    save_user_data(user_id, user_db) # Убедимся, что данные сохраняются
+    logging.info(f"✅ Пользователю {user_id} выдана подписка.")
+    try:
+        await bot.send_message(
+            user_id,
+            "✅ <b>Подписка успешно активирована!</b>\n\n"
+            "Вам доступно <b>3</b> полных анализа и <b>200</b> сообщений ИИ-коучу.\n\n"
+            "Чтобы начать, используйте команду /analyze."
+        )
+    except Exception as e:
+        logging.error(f"Не удалось отправить сообщение о подписке пользователю {user_id}: {e}")
+
+async def yookassa_webhook_handler(request: web.Request):
+    """Обрабатывает вебхуки от ЮKassa."""
+    bot = request.app["bot"]
+    
+    # Проверка IP-адреса (опционально, но рекомендуется)
+    # ...
+
+    try:
+        body = await request.read()
+        event_json = json.loads(body)
+    except json.JSONDecodeError:
+        return web.Response(status=400, text="Invalid JSON")
+
+    # Проверка подписи для безопасности
+    if not YOOKASSA_SECRET_KEY:
+        logging.warning("YOOKASSA_SECRET_KEY не установлен. Проверка подписи вебхука пропускается.")
+    else:
+        try:
+            signature_header = request.headers.get("Webhook-Signature")
+            if not signature_header:
+                logging.warning("В заголовке отсутствует Webhook-Signature.")
+                return web.Response(status=400, text="Missing signature")
+
+            # YooKassa SDK не предоставляет готовой функции для проверки подписи вебхука,
+            # поэтому реализуем ее вручную, как в документации.
+            # Формат подписи: v1=<signature>
+            parts = signature_header.split('=')
+            if len(parts) != 2 or parts[0] != 'v1':
+                logging.warning(f"Неверный формат Webhook-Signature: {signature_header}")
+                return web.Response(status=400, text="Invalid signature format")
+
+            received_signature = parts[1]
+            computed_signature = hmac.new(
+                key=YOOKASSA_SECRET_KEY.encode(),
+                msg=body,
+                digestmod=hashlib.sha256
+            ).hexdigest()
+
+            if not hmac.compare_digest(computed_signature, received_signature):
+                logging.warning("Неверная подпись вебхука.")
+                return web.Response(status=400, text="Invalid signature")
+            
+            logging.info("✅ Подпись вебхука успешно проверена.")
+
+        except Exception as e:
+            logging.error(f"Ошибка при проверке подписи: {e}")
+            return web.Response(status=500, text="Signature check error")
+
+    logging.info(f"🔔 Получен вебхук от ЮKassa: {event_json}")
+
+    if event_json.get("event") == "payment.succeeded":
+        payment_object = event_json.get("object", {})
+        metadata = payment_object.get("metadata", {})
+        user_id = metadata.get("user_id")
+
+        if user_id:
+            await give_subscription(int(user_id), bot)
+        else:
+            logging.warning("В вебхуке не найден user_id в metadata.")
+
+    return web.Response(status=200)
+
+
+async def on_startup(bot: Bot):
+    if BASE_WEBHOOK_URL:
+        webhook_url = f"{BASE_WEBHOOK_URL}{PAYMENT_WEBHOOK_PATH}"
+        await bot.set_webhook(webhook_url)
+        logging.info(f"Установлен вебхук на: {webhook_url}")
+    else:
+        logging.warning("BASE_WEBHOOK_URL не установлен. Бот будет работать в режиме опроса.")
+
 async def main():
-    """Главная функция для запуска бота."""
-    logging.info("🚀 Запуск бота...")
-    await dp.start_polling(bot)
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    
+    # Инициализация Dispatcher
+    # dp определен глобально
+
+    if BASE_WEBHOOK_URL:
+        # Запуск в режиме вебхука
+        app = web.Application()
+        app["bot"] = bot
+
+        app.router.add_post(PAYMENT_WEBHOOK_PATH, yookassa_webhook_handler)
+
+        webhook_requests_handler = SimpleRequestHandler(
+            dispatcher=dp,
+            bot=bot,
+        )
+        webhook_requests_handler.register(app, path=PAYMENT_WEBHOOK_PATH) # Используем тот же путь для бота
+        setup_application(app, dp, bot=bot)
+
+        logging.info(f"Запуск веб-сервера на {WEB_SERVER_HOST}:{WEB_SERVER_PORT}")
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, WEB_SERVER_HOST, WEB_SERVER_PORT)
+        await site.start()
+        await asyncio.Event().wait() # Бесконечное ожидание
+    else:
+        # Запуск в режиме опроса (polling) для локальной разработки
+        logging.info("Запуск в режиме опроса (polling)...")
+        await dp.start_polling(bot)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logging.info("✅ Бот остановлен.")
+        logging.info("Бот остановлен.")
