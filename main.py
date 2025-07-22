@@ -109,72 +109,150 @@ from core.integrations.deepseek import get_ai_answer
 # --- Обработчики команд ---
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
-    """Обработчик команды /start."""
+    """Обработчик команды /start. Разделяет админов и обычных пользователей."""
     await state.clear()
     user_id = message.from_user.id
     logging.info(f"🚀 Пользователь {user_id} нажал /start")
-    user_data = get_user_data(user_id)
 
-    if user_data["is_active"]:
-        analyses_left = "Безлимит" if is_admin(user_id) else user_data['analyses_left']
+    if is_admin(user_id):
         await message.answer(
-            f"🔥 <b>HD | Lookism</b>\n\nТвой ИИ-коуч готов к работе. Осталось анализов: <b>{analyses_left}</b>.\n\nОтправь фото анфас (лицо прямо), чтобы начать.",
+            "<b>👑 Добро пожаловать, Администратор!</b>\n\n"
+            "У вас полный безлимитный доступ ко всем функциям.\n\n"
+            "Чтобы начать новый анализ, используйте команду /new_analysis."
         )
-        await state.set_state(AnalysisStates.waiting_front_photo)
     else:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔥 Активировать ДЕМО (1 анализ)", callback_data="activate_demo")]
-        ])
-        await message.answer(
-            "Добро пожаловать в <b>HD | Lookism</b>!\n\nЭто бот для глубокого анализа внешности и получения персональных рекомендаций.\n\nАктивируйте ДЕМО-доступ, чтобы получить свой первый анализ.",
-            reply_markup=keyboard
+        welcome_text = (
+            "Привет, я <b>ND | Lookism</b> — твой персональный ментор в мире луксмаксинга.\n\n"
+            "Немного того, что я умею:\n"
+            "— анализирую анфас + профиль (углы, симметрия, skin и т.д.)\n"
+            "— ставлю рейтинг Sub‑5 → PSL‑God с конкретным планом\n"
+            "— отвечаю на все вопросы с учетом твоих метрик\n\n"
+            "Я не обычный искусственный интеллект. ND был разработан и запрограммирован специально под улучшение качества жизни. "
+            "И всё, что ты услышишь от меня, это рабочие и проверенные исследованиями данные. \n"
+            "Теперь ты можешь смело забыть про коуп методы, гайды с откатами, не долгосрочные результаты.\n\n"
+            "🎫 <b>Подписка:</b> 990₽ / месяц\n"
+            "Включает 3 полных анализа и 200 сообщений‑консультаций.\n"
+            "💰Нажми кнопку ОПЛАТИТЬ, чтобы активировать доступ."
         )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💰 ОПЛАТИТЬ", callback_data="pay_subscription")] # Пока нерабочая
+        ])
+        await message.answer(welcome_text, reply_markup=keyboard)
 
-@dp.callback_query(F.data == "activate_demo")
-async def activate_demo(cq: CallbackQuery, state: FSMContext):
-    """Активирует ДЕМО-доступ для пользователя."""
+@dp.callback_query(F.data == "pay_subscription")
+async def process_payment_simulation(cq: CallbackQuery, state: FSMContext):
+    """Симулирует успешную оплату и активирует подписку."""
     user_id = cq.from_user.id
-    user_data = get_user_data(user_id)
-    if user_data["is_active"]:
-        await cq.answer("У вас уже есть активный доступ.", show_alert=True)
+    user_db = get_user_data(user_id)
+
+    if user_db.get("is_active", False):
+        await cq.answer("У вас уже есть активная подписка.", show_alert=True)
         return
 
-    logging.info(f"🔥 Пользователь {user_id} активировал ДЕМО-доступ.")
-    user_data["is_active"] = True
-    user_data["analyses_left"] = 1
-    user_data["messages_left"] = 20
-    await cq.message.edit_text("✅ ДЕМО-доступ активирован! У вас <b>1</b> анализ и <b>20</b> сообщений ИИ-коучу.\n\nТеперь отправьте фото анфас, чтобы начать.")
-    await state.set_state(AnalysisStates.waiting_front_photo)
+    logging.info(f"💳 Пользователь {user_id} 'оплатил' подписку.")
+    user_db["is_active"] = True
+    user_db["analyses_left"] = 3
+    user_db["messages_left"] = 200
+    
+    await cq.message.edit_text(
+        "✅ <b>Подписка успешно активирована!</b>\n\n"
+        "Вам доступно <b>3</b> полных анализа и <b>200</b> сообщений ИИ-коучу.\n\n"
+        "Чтобы начать, используйте команду /analyze."
+    )
     await cq.answer()
 
-# --- Обработка фото ---
-@dp.message(F.photo, StateFilter(AnalysisStates.waiting_front_photo, AnalysisStates.waiting_profile_photo))
-async def handle_photos(message: Message, state: FSMContext):
-    """Принимает фото анфас и профиль, инициирует анализ."""
-    current_state = await state.get_state()
+@dp.message(Command("analyze"))
+async def cmd_analyze(message: Message, state: FSMContext):
+    """Запускает новый анализ для платного пользователя."""
     user_id = message.from_user.id
+    
+    if is_admin(user_id):
+        await message.answer("👑 Админам следует использовать команду /new_analysis для безлимитного доступа.")
+        return
 
-    if current_state == AnalysisStates.waiting_front_photo:
-        logging.info(f"📸 Получено фото анфас от {user_id}")
-        await message.answer("✅ Фото анфас принято. Теперь отправь фото в профиль (вид сбоку).")
-        file_info = await bot.get_file(message.photo[-1].file_id)
-        photo_bytes = await bot.download_file(file_info.file_path)
-        await state.update_data(front_photo=photo_bytes.read())
-        await state.set_state(AnalysisStates.waiting_profile_photo)
+    user_db = get_user_data(user_id)
 
-    elif current_state == AnalysisStates.waiting_profile_photo:
-        logging.info(f"📸 Получено фото профиля от {user_id}. Запуск анализа.")
-        if not is_admin(user_id) and get_user_data(user_id)['analyses_left'] <= 0:
-            await message.answer("❌ У вас закончились попытки анализа. Начните заново через /start.")
-            await state.clear()
-            return
+    if not user_db.get("is_active", False) or user_db.get("analyses_left", 0) <= 0:
+        await message.answer(
+            "❌ <b>Нет доступа к анализу.</b>\n\n"
+            "Пожалуйста, активируйте подписку через команду /start, чтобы получить доступ к анализам."
+        )
+        return
 
-        file_info = await bot.get_file(message.photo[-1].file_id)
-        photo_bytes = await bot.download_file(file_info.file_path)
-        await state.update_data(profile_photo=photo_bytes.read())
-        
-        await message.answer("⏳ Оба фото получены. Начинаю глубокий анализ... Это может занять до 2 минут.")
-        asyncio.create_task(run_analysis(message, state))
+    logging.info(f"👤 Пользователь {user_id} начинает платный анализ. Осталось: {user_db['analyses_left']}.")
+    await state.clear()
+    await message.answer(
+        f"Начинаем новый анализ. Осталось попыток: <b>{user_db['analyses_left']}</b>.\n\n"
+        "Пожалуйста, отправьте фото анфас (лицо прямо)."
+    )
+    await state.set_state(AnalysisStates.waiting_front_photo)
+
+@dp.message(Command("new_analysis"))
+async def cmd_new_analysis(message: Message, state: FSMContext):
+    """Запускает новый цикл анализа для администратора."""
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔️ Эта команда доступна только для администраторов.")
+        return
+
+    logging.info(f"👑 Админ {message.from_user.id} инициировал новый анализ.")
+    await state.clear()
+    await message.answer("✅ Начинаем новый анализ. Пожалуйста, отправьте фото анфас (лицо прямо)." )
+    await state.set_state(AnalysisStates.waiting_front_photo)
+
+# --- Обработка фото ---
+@dp.message(F.photo, StateFilter(AnalysisStates.waiting_front_photo))
+async def handle_front_photo(message: Message, state: FSMContext):
+    """Принимает и ВАЛИДИРУЕТ фото анфас."""
+    user_id = message.from_user.id
+    logging.info(f"📸 Получено фото анфас от {user_id}. Начинаю валидацию...")
+    await message.answer("⏳ Проверяю фото анфас...")
+
+    file_info = await bot.get_file(message.photo[-1].file_id)
+    photo_bytes_io = await bot.download_file(file_info.file_path)
+    photo_bytes = photo_bytes_io.read()
+
+    front_analysis = await process_face(photo_bytes)
+
+    if 'error' in front_analysis:
+        logging.warning(f"❌ Валидация фото анфас для {user_id} провалена: {front_analysis['error']}")
+        await message.answer(f"❌ Ошибка фото анфас: {front_analysis['error']}\n\nПожалуйста, отправьте другое фото анфас.")
+        return # Остаемся в том же состоянии, ждем новое фото
+
+    logging.info(f"✅ Фото анфас для {user_id} успешно прошло валидацию.")
+    await state.update_data(front_photo=photo_bytes, front_analysis=front_analysis)
+    await message.answer("✅ Фото анфас принято. Теперь отправь фото в профиль (вид сбоку).")
+    await state.set_state(AnalysisStates.waiting_profile_photo)
+
+
+@dp.message(F.photo, StateFilter(AnalysisStates.waiting_profile_photo))
+async def handle_profile_photo(message: Message, state: FSMContext):
+    """Принимает, ВАЛИДИРУЕТ фото профиля и запускает полный анализ."""
+    user_id = message.from_user.id
+    logging.info(f"📸 Получено фото профиля от {user_id}. Начинаю валидацию...")
+
+    # Проверка лимитов
+    if not is_admin(user_id) and get_user_data(user_id)['analyses_left'] <= 0:
+        await message.answer("❌ У вас закончились попытки анализа. Начните заново через /start.")
+        await state.clear()
+        return
+
+    await message.answer("⏳ Проверяю фото профиля...")
+    file_info = await bot.get_file(message.photo[-1].file_id)
+    photo_bytes_io = await bot.download_file(file_info.file_path)
+    photo_bytes = photo_bytes_io.read()
+
+    profile_analysis = await process_face(photo_bytes)
+
+    if 'error' in profile_analysis:
+        logging.warning(f"❌ Валидация фото профиля для {user_id} провалена: {profile_analysis['error']}")
+        await message.answer(f"❌ Ошибка фото профиль: {profile_analysis['error']}\n\nПожалуйста, отправьте другое фото в профиль.")
+        return # Остаемся в том же состоянии, ждем новое фото
+
+    logging.info(f"✅ Фото профиля для {user_id} успешно прошло валидацию.")
+    await state.update_data(profile_photo=photo_bytes, profile_analysis=profile_analysis)
+
+    await message.answer("✅ Оба фото приняты и проверены. Начинаю глубокий анализ... Это может занять до 2 минут.")
+    asyncio.create_task(run_analysis(message, state))
 
 async def run_analysis(message: Message, state: FSMContext):
     """Полный цикл анализа: Face++, расчёт метрик, генерация отчёта DeepSeek."""
@@ -183,21 +261,13 @@ async def run_analysis(message: Message, state: FSMContext):
     
     try:
         user_data = await state.get_data()
-        front_photo_bytes = user_data.get('front_photo')
-        profile_photo_bytes = user_data.get('profile_photo')
+        # Данные анализа уже пред-загружены и проверены на предыдущих шагах
+        front_analysis = user_data.get('front_analysis')
+        profile_analysis = user_data.get('profile_analysis')
 
-        if not front_photo_bytes or not profile_photo_bytes:
-            await bot.send_message(chat_id, "❌ Ошибка: не найдены оба фото. Начните заново с /start.")
-            return
-
-        front_analysis = await process_face(front_photo_bytes)
-        if 'error' in front_analysis:
-            await bot.send_message(chat_id, f"❌ Ошибка фото анфас: {front_analysis['error']}")
-            return
-
-        profile_analysis = await process_face(profile_photo_bytes)
-        if 'error' in profile_analysis:
-            await bot.send_message(chat_id, f"❌ Ошибка фото профиль: {profile_analysis['error']}")
+        if not front_analysis or not profile_analysis:
+            await bot.send_message(chat_id, "❌ Критическая ошибка: данные анализа не найдены. Начните заново с /start.")
+            await state.clear()
             return
 
         logging.info("🧠 Расчёт всех луксмакс-метрик...")
@@ -227,8 +297,6 @@ async def run_analysis(message: Message, state: FSMContext):
 
     except Exception as e:
         logging.error(f"Критическая ошибка в run_analysis для user {user_id}: {e}", exc_info=True)
-        await bot.send_message(chat_id, "❌ Произошла критическая ошибка во время анализа. Пожалуйста, начните заново с /start.")
-    except Exception as e:
         logging.error(f"Критическая ошибка в run_analysis для user {user_id}: {e}", exc_info=True)
         await bot.send_message(chat_id, "❌ Произошла критическая ошибка во время анализа. Пожалуйста, начните заново с /start.")
         await state.clear()
