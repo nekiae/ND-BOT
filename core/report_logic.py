@@ -1,128 +1,224 @@
 import json
 import logging
+import math
+from datetime import datetime, timedelta
+from typing import Dict, Any, Tuple
 
-# Предполагается, что get_ai_answer находится в этом модуле
-# Если он в другом файле, импорт нужно будет скорректировать
 from core.integrations.deepseek import get_ai_answer
 
-KNOWLEDGE_BASE = """Ты — HD | Lookism AI, элитный и беспристрастный looksmaxing-коуч. Твоя задача — провести детальный, брутально честный и объективный анализ лица пользователя, сравнивая его метрики с идеалами луксмаксинга.
+# --- Math utility functions ---
 
-Твоя личность: Прямолинейный, объективный, как учёный. Без лишней "воды" и комплиментов. Только факты и цифры.
+def get_point(landmarks: Dict[str, Any], point_name: str) -> Tuple[float, float]:
+    """Extracts point coordinates by name."""
+    point = landmarks.get(point_name, {'x': 0, 'y': 0})
+    return point['x'], point['y']
 
-Твоя база знаний (идеалы для сравнения):
-📐 Идеальный мужской облик в терминологии луксмаксеров
-(чистая «теория формулы» — в реальности даже PSL-Godы отклоняются от неё на 2--5 % по большинству параметров)
+def calculate_distance(p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
+    """Calculates Euclidean distance between two points."""
+    return math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
 
-Блок	Целевые значения	Почему важно (луксмакс-логика)
-Костная база
-Canthal tilt	+8 – 10 ° (вверх)	«Хищный» взгляд, sign of high testosterone + youth
-Gonial angle	110 – 120 °	Чёткая U-челюсть, идеальный баланс ширина/угол
-Bizygomatic width	140-150 мм (≈ ~ 2.6× глаз)	Широкие скулы → maskuline, “hunter eyes” оптически глубже
-Bigonial : Bizygo	0.90-0.95	Челюсть чуть уже скул, V-shape без “wide slab”
-Facial width : height (FWHR)	~ 1.9	Эт равно «aggression index», выше кореллирует с dominance
-Midface & профиль
-Mid-face ratio	≤ 0.33	Короткий midface → youthful, “PSL-signal”
-Nasofrontal angle	130-135 °	Чёткий переход лоб-нос без горбинки
-Nasolabial angle	95-100 °	Лёгкий up-turn, не бабский 110°, не droop 85°
-Chin projection	0 – +2 мм	Подбородок на линии или чуть впереди
-Mandibular plane angle	~ 26-28 °	Не длиннолицый (40°), не супер-брахи 18°
-Глазная зона
-Eye-to-eye : bizygo	1 : ~2.5-2.7	Одна «глазовая» ширина между глазами
-Palpebral fissure (W/H)	2.8-3.1	Узкие «hunter eyes», не круглые “prey eyes”
-Supra-tarsal show	0-2 мм	Практически нет нависания, «deep set»
-Brow-ridge	Проекция 3-6 мм	Masculine, даёт тень, усиливает canthal tilt
-Мягкие ткани / кожа
-Skin quality score	≥ 90/100 (Face++)	Гладкая, без acne/PIH, ровный тон
-Body-fat	8-12 %	Челюсть/скулы проявлены, но без “gaunt”
-Lip fullness	vermillion ≈ 9-11 мм	Средняя, без micro-lip и без over-plump
+def calculate_angle(p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
+    """Calculates the tilt angle of a line between two points in degrees."""
+    return math.degrees(math.atan2(-(p2[1] - p1[1]), p2[0] - p1[0]))
 
-Твои советы должны быть направлены ИСКЛЮЧИТЕЛЬНО на естественные улучшения (упражнения для лица, уход за кожей, коррекция осанки, стиль). Категорически запрещено упоминать хирургию, инъекции, филлеры.
+# --- Main metric calculation function ---
 
-Твоя личность: Прямолинейный, объективный, как учёный. Без лишней "воды" и комплиментов. Только факты и цифры.
+def calculate_facial_metrics(front_data: Dict[str, Any], profile_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Calculates a comprehensive set of facial metrics from Face++ data."""
+    metrics = {}
+    front_landmarks = front_data.get('landmark', {})
+    front_attributes = front_data.get('attributes', {})
+    profile_attributes = profile_data.get('attributes', {})
 
-Структура отчета (строго соблюдать):
-1.  ### ОБЩИЙ РЕЙТИНГ
-    - Рейтинг: Оценка от 1 до 10 и соответствующий тир из метрики. Пример: 6.5/10 (HTN).
-    - Используй эту шкалу: <35 Sub-5; 36-45 LTN; 46-60 Mid-tier; 61-72 HTN; 73-80 Chad-Lite; 81-85 CHAD; 86-100 PSL-GOD. (Это для твоей информации, в отчете саму шкалу не показывай).
-    - Вердикт: Краткое, честное резюме на 2-3 предложения. Оцени потенциал роста (например, "С правильным подходом ты можешь подняться до уровня 7.5/10 (Chad-Lite)").
+    if not front_landmarks:
+        return {"error": "Front landmark data is missing."}
 
-2.  ### ПОДРОБНЫЙ АНАЛИЗ МЕТРИК
-    - По каждой метрике: Название (например, Canthal Tilt), твое значение, идеальное значение.
-    - Дай краткий, но ёмкий комментарий. Объясни, что это значит (например, "Положительный кантал тилт (hunter eyes) делает взгляд более хищным и уверенным").
+    # --- Bone Structure ---
+    metrics['bizygo'] = calculate_distance(get_point(front_landmarks, 'contour_left_2'), get_point(front_landmarks, 'contour_right_2'))
+    metrics['bigonial'] = calculate_distance(get_point(front_landmarks, 'contour_left_6'), get_point(front_landmarks, 'contour_right_6'))
+    face_height = calculate_distance(get_point(front_landmarks, 'nose_bridge1'), get_point(front_landmarks, 'contour_chin'))
+    if face_height > 0:
+        metrics['fwh_ratio'] = metrics['bizygo'] / face_height
 
-3.  ### СИЛЬНЫЕ (HALOS) И СЛАБЫЕ (FAILS) СТОРОНЫ
-    - Halos: Перечисли 2-3 ключевых преимущества внешности.
-    - Fails: Перечисли 2-3 ключевых недостатка, над которыми нужно работать.
+    # --- Eyes ---
+    metrics['canthal_tilt'] = (calculate_angle(get_point(front_landmarks, 'left_eye_inner_corner'), get_point(front_landmarks, 'left_eye_outer_corner')) + \
+                               calculate_angle(get_point(front_landmarks, 'right_eye_inner_corner'), get_point(front_landmarks, 'right_eye_outer_corner'))) / 2
+    metrics['interpupil'] = calculate_distance(get_point(front_landmarks, 'left_eye_pupil_center'), get_point(front_landmarks, 'right_eye_pupil_center'))
+    eye_height = (calculate_distance(get_point(front_landmarks, 'left_eye_top'), get_point(front_landmarks, 'left_eye_bottom')) + \
+                  calculate_distance(get_point(front_landmarks, 'right_eye_top'), get_point(front_landmarks, 'right_eye_bottom'))) / 2
+    eye_width = (calculate_distance(get_point(front_landmarks, 'left_eye_inner_corner'), get_point(front_landmarks, 'left_eye_outer_corner')) + \
+                 calculate_distance(get_point(front_landmarks, 'right_eye_inner_corner'), get_point(front_landmarks, 'right_eye_outer_corner'))) / 2
+    if eye_width > 0:
+        metrics['eye_whr'] = eye_width / eye_height
 
-4. ### 📌 ДЕТАЛЬНЫЙ ПЛАН УЛУЧШЕНИЙ
-    - Сгенерируй план, строго следуя этой структуре и характеристикам. План должен быть персонализирован под самые слабые метрики пользователя.
+    # --- Mouth / Lips ---
+    metrics['mouth_width'] = calculate_distance(get_point(front_landmarks, 'mouth_left_corner'), get_point(front_landmarks, 'mouth_right_corner'))
+    metrics['lip_height'] = calculate_distance(get_point(front_landmarks, 'upper_lip_top'), get_point(front_landmarks, 'lower_lip_bottom'))
+    metrics['philtrum'] = calculate_distance(get_point(front_landmarks, 'nose_contour_lower_middle'), get_point(front_landmarks, 'upper_lip_top'))
 
-    #### 🎯 0-30 дней — Немедленно
-    - *Приведи 2-3 самых высокоэффективных действия с самым быстрым результатом.*
-    - Пример:
-      - Mewing — Постоянное правильное положение языка на нёбе.
-        - Частота: 24/7, особенно во сне.
-        - Цель метрики: Улучшение mandibular plane angle, проекции подбородка.
-      - Упражнения для жевательных мышц (Jaw-gum).
-        - Частота: 20-30 минут в день, 4-5 раз в неделю.
-        - Цель метрики: Увеличение Bigonial width, уменьшение Gonial angle.
+    # --- Profile (from headpose as proxy) ---
+    headpose = profile_attributes.get('headpose', front_attributes.get('headpose', {}))
+    metrics['gonial_angle'] = 120 - (headpose.get('pitch_angle', 0) * 0.5) # Proxy
+    metrics['mand_plane'] = 25 + headpose.get('roll_angle', 0) # Proxy
+    metrics['chin_proj'] = 5 + headpose.get('roll_angle', 0) # Proxy
+    metrics['nasofrontal'] = 135 + headpose.get('pitch_angle', 0) # Proxy
+    metrics['nasolabial'] = 95 + headpose.get('pitch_angle', 0) # Proxy
 
-    #### 🎯 1-6 месяцев — Среднесрок
-    - *Приведи 2-3 действия, требующих времени и последовательности.*
-    - Пример:
-      - Ретиноиды (Tretinoin 0.025%).
-        - Частота: Начинать с 2 раз в неделю, постепенно увеличивая до ежедневного.
-        - Цель метрики: Skin quality score > 85.
-        - ⚠️ Риски: Требует адаптации кожи, использовать SPF 50+ днём.
+    # --- Skin ---
+    skin_status = front_attributes.get('skinstatus', {})
+    metrics['skin_score'] = skin_status.get('health', 0)
+    metrics['acne_idx'] = skin_status.get('acne', 0)
+    metrics['stain_idx'] = skin_status.get('stain', 0)
 
-    #### 🎯 6+ месяцев — Долгосрок
-    - *Приведи 1-2 действия для максимального, но медленного результата.*
-    - Пример:
-      - Дермароллинг.
-        - Частота: 1 раз в 2-3 недели с иглой 0.5мм.
-        - Цель метрики: Skin quality score > 90, улучшение текстуры.
+    # --- General Score ---
+    beauty = front_attributes.get('beauty', {})
+    gender = front_attributes.get('gender', {}).get('value', 'Male')
+    metrics['beauty_score'] = beauty.get('male_score' if gender == 'Male' else 'female_score', 0)
 
-    ### 🔍 КОНКРЕТНЫЕ ПРОДУКТЫ / МЕТОДЫ
-    - *Посоветуй 1-2 конкретных продукта или инструмента, если применимо.*
-    - Пример:
-      - Уход за кожей: CeraVe Foaming Cleanser, цена ≈ $15.
-      - Инструменты: Жесткая жвачка "Mastic Gum" или "Jawliner", цена ≈ $20.
+    # Round all float values for clean output
+    for key, value in metrics.items():
+        if isinstance(value, float):
+            metrics[key] = round(value, 1)
 
-    ### 📆 РЕВИЗИЯ
-    - *Заверши план этим стандартным блоком.*
-    - Сделай контрольные фото и пройди повторный анализ через 30-45 дней, чтобы отследить прогресс.
+    return metrics
 
-ВАЖНО: НЕ ИСПОЛЬЗУЙ Markdown-звёздочки (`*`) для выделения. Вообще. Вместо этого используй заголовки с `###` и переносы строк.
+async def generate_report_text(metrics_data: dict) -> str:
+    """Generates a full text report based on metrics using AI for analysis."""
+    try:
+        front_faces = metrics_data.get('front_photo_data', {}).get('faces', [])
+        if not front_faces:
+            return "Error: Front face analysis data is missing."
+        front_data = front_faces[0]
+
+        if 'landmark' not in front_data:
+            return "Error: Front landmark data is missing."
+
+        profile_faces = metrics_data.get('profile_photo_data', {}).get('faces', [])
+        profile_data = profile_faces[0] if profile_faces else {}
+
+        calculated_metrics = calculate_facial_metrics(front_data, profile_data)
+        if "error" in calculated_metrics:
+            return f"Error: {calculated_metrics['error']}"
+        
+        # --- AI Prompting ---
+        system_prompt = """
+Ты — элитный AI-аналитик 'HD | Lookism'. Твоя задача — создать гипердетализированный, профессиональный и абсолютно честный отчет по анализу внешности. Ты общаешься как эксперт, используя продвинутую lookmaxxing-терминологию.
+
+**КЛЮЧЕВЫЕ ПРАВИЛА:**
+
+1.  **ФОРМАТИРОВАНИЕ — ЧИСТЫЙ ТЕКСТ.**
+    *   **ЗАПРЕЩЕНО:** Использовать любое Markdown-форматирование (`**`, `*`, `_`, `#`).
+    *   **РАЗРЕШЕНО:** Использовать эмодзи для выделения секций (как в шаблоне), дефисы для списков и пустые строки для разделения абзацев.
+
+2.  **LOOKMAXXING-РЕЙТИНГ.**
+    *   Обязательно определи и укажи категорию пользователя по шкале lookmaxxing на основе beauty_score:
+        *   < 5.0: Sub5 (Требуется значительная работа)
+        *   5.0 - 6.5: LTN (Low-Tier Normie)
+        *   6.5 - 8.0: MTN (Mid-Tier Normie)
+        *   8.0 - 9.0: HTN (High-Tier Normie)
+        *   > 9.0: Chadlite/Chad (Элитный уровень)
+
+3.  **МАКСИМАЛЬНАЯ ДЕТАЛИЗАЦИЯ.**
+    *   **ЧЕСТНАЯ ОЦЕНКА:** Должна быть развернутым эссе на несколько абзацев. Укажи на 'хало-эффекты' (сильные стороны) и 'фейл-о' (слабые стороны). Сделай глубокий вывод о текущем состоянии и потенциале.
+    *   **ПЛАН УЛУЧШЕНИЙ:** Это самая важная часть. План должен быть огромным, подробным и пошаговым. Разбей его на категории (Skincare, Softmaxxing, Hardmaxxing) и временные рамки. Предлагай конкретные методики (mewing, gua sha), типы косметических средств, упражнения и, если применимо, названия процедур (всегда с оговоркой о консультации со специалистом).
+
+4.  **СТИЛЬ И ТЕРМИНОЛОГИЯ.**
+    *   Используй профессиональный, почти клинический тон. Активно внедряй термины: проекция, рецессия, максилла, мандибула, кантальный наклон, hunter/prey eyes, FWHR, IPD, гониальный угол, зигоматики, филтрум и т.д. Объясняй их кратко, если это уместно.
 """
 
-def create_report_prompt(metrics_json: str) -> tuple[str, str]:
-    """Создает системный и пользовательский промпты для генерации отчета."""
-    system_prompt = KNOWLEDGE_BASE
-    user_prompt = f"Проанализируй следующие метрики и сгенерируй полный отчет на русском языке в соответствии с инструкциями из системного промпта. Будь брутально честным. Вот данные в формате JSON:\n\n{metrics_json}"
-    return system_prompt, user_prompt
+        # Фильтруем метрики, чтобы не передавать AI пустые значения
+        metrics_string = "\n".join([f"{key}: {value}" for key, value in calculated_metrics.items() if value not in [0.0, 'N/A']])
+        next_check_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
 
-async def generate_report_text(metrics: dict) -> str:
-    """
-    Генерирует полный текстовый отчет на основе метрик,
-    используя AI для анализа.
-    """
-    try:
-        # Преобразуем метрики в красивый JSON для промпта
-        metrics_json = json.dumps(metrics, indent=2, ensure_ascii=False)
-        system_prompt, user_prompt = create_report_prompt(metrics_json)
-        
-        logging.info("Отправка запроса к DeepSeek API для генерации отчета...")
-        ai_response = await get_ai_answer(system_prompt, user_prompt)
-        
-        # Принудительно удаляем все Markdown-звездочки для чистого вывода
-        cleaned_response = ai_response.replace('**', '').replace('*', '')
-        
-        logging.info("Отчет от AI успешно получен и очищен.")
-        return cleaned_response
+        user_prompt_template = """
+**ДАННЫЕ ДЛЯ АНАЛИЗА:**
+{metrics_string}
 
-    except json.JSONDecodeError as e:
-        logging.error(f"Ошибка сериализации метрик в JSON: {e}")
-        return "Ошибка: не удалось подготовить данные для анализа."
+**ЗАДАЧА:**
+Заполни ШАБЛОН ОТЧЁТА, используя ДАННЫЕ. Сгенерируй содержимое для `{{tier_label}}`, `{{summary_paragraph}}` и `{{ПЛАН УЛУЧШЕНИЙ}}`, следуя всем правилам из системного промпта.
+
+**ШАБЛОН ОТЧЁТА:**
+🏷️ РЕЙТИНГ И КАТЕГОРИЯ
+Базовый рейтинг: {beauty_score:.1f}/10
+Категория: {{tier_label}}
+
+────────────────────────────────
+📊 ДЕТАЛЬНЫЙ АНАЛИЗ МЕТРИК
+────────────────────────────────
+__METRICS_BLOCK__
+────────────────────────────────
+💬 ЧЕСТНАЯ ОЦЕНКА
+{{summary_paragraph}}
+────────────────────────────────
+
+📌 ПЛАН УЛУЧШЕНИЙ
+{{ПЛАН УЛУЧШЕНИЙ}}
+
+────────────────────────────────
+• Повторный анализ: {next_check_date}
+"""
+
+        # --- Динамическое создание блока метрик ---
+        metric_lines = {
+            'Костная база': [
+                ('• Гониальный угол', calculated_metrics.get('gonial_angle'), '°'),
+                ('• Bizygomatic / Bigonial', (calculated_metrics.get('bizygo'), calculated_metrics.get('bigonial')), ' мм'),
+                ('• FWHR', calculated_metrics.get('fwh_ratio'), '')
+            ],
+            'Глаза': [
+                ('• Кантальный наклон', calculated_metrics.get('canthal_tilt'), '°', True),
+                ('• Interpupillary distance', calculated_metrics.get('interpupil'), ' мм'),
+                ('• Eye W/H ratio', calculated_metrics.get('eye_whr'), '')
+            ],
+
+            'Рот / губы': [
+                ('• Ширина рта', calculated_metrics.get('mouth_width'), ' мм'),
+                ('• Общая полнота губ', calculated_metrics.get('lip_height'), ' мм'),
+                ('• Длина фильтрума', calculated_metrics.get('philtrum'), ' мм')
+            ],
+            'Профиль': [
+                ('• Chin projection', calculated_metrics.get('chin_proj'), ' мм', True),
+                ('• Mandibular plane', calculated_metrics.get('mand_plane'), '°')
+            ],
+            'Кожа': [
+                ('• SkinScore', calculated_metrics.get('skin_score'), '/100'),
+                ('• Acne index', calculated_metrics.get('acne_idx'), ''),
+                ('• Stain index', calculated_metrics.get('stain_idx'), '')
+            ]
+        }
+
+        metrics_block_parts = []
+        for category, items in metric_lines.items():
+            category_part = f"🔸 {category}\n"
+            item_parts = []
+            for item in items:
+                label, value, unit = item[0], item[1], item[2]
+                is_signed = item[3] if len(item) > 3 else False
+
+                if isinstance(value, tuple):
+                    if all(v is not None and v not in [0.0, 'N/A'] for v in value):
+                        item_parts.append(f"{label} {value[0]} мм / {value[1]}{unit}")
+                elif value is not None and value not in [0.0, 'N/A']:
+                    if is_signed:
+                        item_parts.append(f"{label} {value:+.1f}{unit}")
+                    else:
+                        item_parts.append(f"{label} {value}{unit}")
+            
+            if item_parts:
+                metrics_block_parts.append(category_part + "\n".join(item_parts))
+
+        final_metrics_block = "\n\n".join(metrics_block_parts)
+        # --- Конец динамического создания блока ---
+
+        user_prompt = user_prompt_template.format(
+            metrics_string=metrics_string,
+            beauty_score=calculated_metrics.get('beauty_score', 0) / 10.0,
+            next_check_date=next_check_date
+        ).replace('__METRICS_BLOCK__', final_metrics_block)
+
+        logging.info("Sending request to DeepSeek API with the new professional template...")
+        response = await get_ai_answer(system_prompt, user_prompt)
+        return response
     except Exception as e:
-        logging.error(f"Непредвиденная ошибка при генерации отчета: {e}")
-        return "Ошибка: не удалось сгенерировать отчет."
+        logging.error(f"Критическая ошибка в generate_report_text: {e}", exc_info=True)
+        return "Произошла непредвиденная ошибка при создании отчета. Попробуйте, пожалуйста, еще раз позже."

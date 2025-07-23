@@ -14,67 +14,10 @@ from task_queue import task_queue
 from analyzers.client import FacePlusPlusClient, AILabClient, DeepSeekClient
 from analyzers.metrics import extract_all_metrics
 from analyzers.lookism_metrics import compute_all as compute_geo_metrics
-from analyzers.report_generator import generate_full_report, generate_system_prompt_with_knowledge
+from analyzers.report_generator import create_report_for_user
 import httpx
 
 logger = logging.getLogger(__name__)
-
-# Knowledge base for recommendations
-KNOWLEDGE_BASE = """
-УПРАЖНЕНИЯ И ПРОЦЕДУРЫ:
-- Мьюинг (mewing) - правильная позиция языка для улучшения челюсти
-- Жевательные упражнения с жвачкой Falim для развития массетеров
-- Упражнения для глаз и кантального тилта
-- Скрабинг и уход за кожей лица
-- Массаж лица для улучшения кровообращения
-
-ДОБАВКИ:
-- Коллаген для упругости кожи
-- Витамин D3 + K2 для костной структуры
-- Цинк для здоровья кожи
-- Омега-3 для противовоспалительного эффекта
-
-ПРОЦЕДУРЫ:
-- Филлеры для коррекции объема
-- Ботокс для разглаживания морщин
-- Ринопластика для коррекции носа
-- Блефаропластика для век
-- Подтяжка лица
-"""
-
-SYSTEM_PROMPT = f"""Ты — русскоязычный looksmax-коуч. Используй лёгкий луксмакс сленг (HTN, Chad-Lite, Sub-5 и т.д.), но без оскорблений.
-Дай отчёт строго в формате:
-
-🏷️ РЕЙТИНГ И КАТЕГОРИЯ  
-Базовый рейтинг: {{base_rating}}/10 | Компонентный: {{composite_rating}}/10 | Категория: {{category}}
-
-### 📊 ДЕТАЛЬНЫЙ АНАЛИЗ МЕТРИК  
-• Кантальный тилт: {{canthal_tilt}}° (оптимум: +2-5°)
-• Гониальный угол: {{gonial_angle}}° (оптимум: 120°)
-• Пропорции лица: {{facial_thirds}}
-• Симметрия: {{symmetry_score}}/10
-• Проекция подбородка: {{chin_projection}}
-
-### 💬 ЧЕСТНАЯ ОЦЕНКА  
-2-4 предложения о сильных и слабых сторонах внешности.
-
-### 📌 ДЕТАЛЬНЫЙ ПЛАН УЛУЧШЕНИЙ  
-**Немедленные (0-3 месяца):**
-- Конкретные упражнения и процедуры
-
-**Среднесрочные (3-12 месяцев):**
-- Более серьёзные изменения
-
-**Долгосрочные (1+ год):**
-- Кардинальные улучшения
-
-### 🔍 КОНКРЕТНЫЕ ПРОДУКТЫ  
-Выдай 3-5 позиций из KNOWLEDGE_BASE, подходящих под слабые метрики.
-
-💬 Теперь можешь задавать вопросы!
-
-KNOWLEDGE_BASE = \"\"\"{KNOWLEDGE_BASE}\"\"\"
-"""
 
 
 class AnalysisWorker:
@@ -155,18 +98,13 @@ class AnalysisWorker:
                 except Exception as geo_err:
                     logger.warning(f"Failed to compute geo metrics: {geo_err}")
                 
-                # Generate report with DeepSeek or fallback to template
+                # Generate report with DeepSeek
                 logger.info("Generating report...")
                 try:
-                    # Try DeepSeek API first
-                    system_prompt = generate_system_prompt_with_knowledge()
-                    report_text = await self.deepseek_client.generate_report(
-                        metrics, system_prompt
-                    )
-                except Exception as deepseek_err:
-                    logger.warning(f"DeepSeek failed, using template: {deepseek_err}")
-                    # Fallback to template-based report
-                    report_text = generate_full_report(metrics)
+                    report_text = await create_report_for_user(metrics)
+                except Exception as report_err:
+                    logger.error(f"Failed to generate report: {report_err}")
+                    report_text = "Произошла ошибка при создании отчета. Попробуйте позже."
                 
                 # Save results
                 session.result_json = {

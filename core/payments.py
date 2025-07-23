@@ -1,4 +1,6 @@
 import os
+import logging
+import json
 from uuid import uuid4
 from yookassa import Configuration, Payment
 from requests.exceptions import HTTPError
@@ -13,7 +15,7 @@ if shop_id and secret_key:
 else:
     print("⚠️ YOOKASSA_SHOP_ID или YOOKASSA_SECRET_KEY не найдены. Функционал оплаты будет недоступен.")
 
-def create_yookassa_payment(user_id: int, amount: str, currency: str = "RUB") -> Payment | None:
+def create_yookassa_payment(user_id: int, amount: str, bot_username: str, currency: str = "RUB") -> Payment | None:
     """
     Создает платеж в ЮKassa и возвращает объект платежа.
     В metadata сохраняем user_id для идентификации при обработке вебхука.
@@ -28,22 +30,23 @@ def create_yookassa_payment(user_id: int, amount: str, currency: str = "RUB") ->
                 "value": amount,
                 "currency": currency
             },
-            "confirmation": {
-                "type": "redirect",
-                "return_url": f"https://t.me/{os.getenv('BOT_USERNAME', '')}"
+            'confirmation': {
+                'type': 'redirect',
+                'return_url': f"https://t.me/{bot_username}"
             },
             "capture": True,
-            "description": f"Подписка HD | Lookism для пользователя {user_id}",
+            "description": f"Подписка на ND | Lookism (1 месяц) для user_id:{user_id}",
             "metadata": {
                 "user_id": str(user_id)
             },
             "receipt": {
                 "customer": {
-                    "email": f"user_{user_id}@example.com"
+                    # ВАЖНО: Для реальных платежей здесь должен быть email или телефон пользователя
+                    "email": f"user_{user_id}@example.com",
                 },
                 "items": [
                     {
-                        "description": "Подписка HD | Lookism",
+                        "description": "Подписка на ND | Lookism (1 месяц)",
                         "quantity": "1.00",
                         "amount": {
                             "value": amount,
@@ -56,10 +59,11 @@ def create_yookassa_payment(user_id: int, amount: str, currency: str = "RUB") ->
         }, idempotence_key)
         return payment
     except HTTPError as e:
-        print("❌ Ошибка создания платежа YooKassa!")
-        print(f"Статус-код: {e.response.status_code}")
+        logging.error("❌ Ошибка создания платежа YooKassa!")
+        logging.error(f"Статус-код: {e.response.status_code}")
         try:
-            print(f"Тело ответа: {e.response.json()}")
+            error_details = e.response.json()
+            logging.error(f"Тело ответа: {json.dumps(error_details, indent=2, ensure_ascii=False)}")
         except Exception:
-            print(f"Тело ответа (не JSON): {e.response.text}")
+            logging.error(f"Тело ответа (не JSON): {e.response.text}")
         return None

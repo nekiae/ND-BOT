@@ -1,48 +1,44 @@
 import os
-import aiohttp
+import logging
+from openai import AsyncOpenAI
 
-# Получаем ключ API из переменных окружения
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-API_URL = "https://api.deepseek.com/chat/completions"
+# --- Инициализация логгера ---
+logger = logging.getLogger(__name__)
+
+# --- Клиент DeepSeek ---
+# Мы используем клиент OpenAI, так как API DeepSeek совместим с ним.
+# Это стандартный и надежный способ.
+client = AsyncOpenAI(
+    api_key=os.getenv("DEEPSEEK_API_KEY"),
+    base_url="https://api.deepseek.com/v1"
+)
 
 async def get_ai_answer(system_prompt: str, user_prompt: str) -> str:
     """
-    Asynchronously sends a request to the DeepSeek API and returns the AI's response.
+    Асинхронно получает ответ от модели DeepSeek.
 
     Args:
-        system_prompt: The system message to guide the AI.
-        user_prompt: The user's message or data to be analyzed.
+        system_prompt: Системный промпт для модели.
+        user_prompt: Пользовательский промпт.
 
     Returns:
-        The content of the AI's response as a string, or an error message.
+        Строка с ответом от AI или сообщение об ошибке.
     """
-    if not DEEPSEEK_API_KEY:
-        return "Ошибка: Ключ API для DeepSeek не найден. Проверьте .env файл."
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
-    }
-
-    payload = {
-        "model": "deepseek-chat",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.4,
-        "max_tokens": 4096,  # Увеличим лимит для полных отчетов
-        "stream": False
-    }
-
+    logger.info(f"Запрос к DeepSeek API. System prompt: {system_prompt[:100]}... User prompt: {user_prompt[:100]}...")
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(API_URL, headers=headers, json=payload) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data['choices'][0]['message']['content']
-                else:
-                    error_text = await response.text()
-                    return f"Ошибка API DeepSeek: {response.status} - {error_text}"
+        response = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=4096,
+            temperature=0.7,
+        )
+        ai_response = response.choices[0].message.content
+        logger.info(f"Получен ответ от DeepSeek API: {ai_response[:100]}...")
+        return ai_response
     except Exception as e:
-        return f"Произошла ошибка при обращении к DeepSeek: {e}"
+        logger.error(f"Ошибка при обращении к DeepSeek API: {e}", exc_info=True)
+        return "К сожалению, произошла ошибка при обращении к AI. Попробуйте позже."
+        raise

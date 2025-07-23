@@ -3,6 +3,7 @@
 import os
 from typing import AsyncGenerator
 
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import SQLModel
@@ -60,7 +61,53 @@ async def check_subscription(user_id: int) -> bool:
         user = await session.get(User, user_id)
         if not user or not user.is_active_until:
             return False
-        return user.is_active_until > datetime.utcnow()
+
+        # Сделаем is_active_until таймзон-осведомленным, если он еще не такой
+        active_until = user.is_active_until
+        if active_until.tzinfo is None:
+            active_until = active_until.replace(tzinfo=timezone.utc)
+
+        return active_until > datetime.now(timezone.utc)
+
+async def get_users_with_expiring_subscription(days_left: int) -> list[User]:
+    """Находит пользователей, у которых подписка истекает через указанное количество дней."""
+    async with async_session() as session:
+        # Ищем дату в диапазоне от начала до конца указанного дня
+        target_date_start = datetime.now(timezone.utc).date() + timedelta(days=days_left)
+        target_date_end = target_date_start + timedelta(days=1)
+
+        result = await session.execute(
+            select(User).where(
+                User.is_active_until >= target_date_start,
+                User.is_active_until < target_date_end,
+                User.is_active.is_(True) # Проверяем только активных пользователей
+            )
+        )
+        return list(result.scalars().all())
+
+async def get_user(user_id: int) -> User | None:
+    """Получает пользователя по его ID."""
+    async with async_session() as session:
+        user = await session.get(User, user_id)
+        return user
+
+
+async def decrement_user_messages(user_id: int):
+    """Уменьшает количество оставшихся сообщений пользователя на 1."""
+    async with async_session() as session:
+        user = await session.get(User, user_id)
+        if user and user.messages_left > 0:
+            user.messages_left -= 1
+            await session.commit()
+
+async def decrement_user_analyses(user_id: int):
+    """Уменьшает количество оставшихся анализов пользователя на 1."""
+    async with async_session() as session:
+        user = await session.get(User, user_id)
+        if user and user.analyses_left > 0:
+            user.analyses_left -= 1
+            await session.commit()
+
 
 async def give_subscription_to_user(user_id: int, days: int = 30, analyses: int = 3, messages: int = 200) -> None:
     """Grant or extend a subscription for a user."""
@@ -71,12 +118,12 @@ async def give_subscription_to_user(user_id: int, days: int = 30, analyses: int 
                 user = User(id=user_id)
                 session.add(user)
             
-            if user.is_active_until and user.is_active_until > datetime.utcnow():
+            if user.is_active_until and user.is_active_until > datetime.now(timezone.utc):
                 # Если подписка уже активна, продлеваем ее
                 user.is_active_until += timedelta(days=days)
             else:
                 # Иначе, устанавливаем новую дату окончания
-                user.is_active_until = datetime.utcnow() + timedelta(days=days)
+                user.is_active_until = datetime.now(timezone.utc) + timedelta(days=days)
             
             user.analyses_left += analyses
             user.messages_left += messages

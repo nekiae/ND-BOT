@@ -2,11 +2,86 @@ import os
 import logging
 import httpx
 from typing import Tuple, Optional
+from aiogram.types import Message
+from aiogram import Bot
+import aiohttp
 
 # --- Конфигурация Face++ ---
 FACEPP_API_KEY = os.getenv("FACEPP_API_KEY")
 FACEPP_API_SECRET = os.getenv("FACEPP_API_SECRET")
 FACEPP_DETECT_URL = "https://api-us.faceplusplus.com/facepp/v3/detect"
+
+logger = logging.getLogger(__name__)
+
+async def detect_face(photo_bytes: bytes) -> dict:
+    """Sends photo to Face++ detect API and returns the result."""
+    params = {
+        'api_key': FACEPP_API_KEY,
+        'api_secret': FACEPP_API_SECRET,
+        'return_landmark': 2, # 1 for 83 points, 2 for 106 points
+        'return_attributes': 'gender,age,headpose,beauty,skinstatus'
+    }
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(FACEPP_DETECT_URL, data={'image_file': photo_bytes}, params=params) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Face++ API error: {response.status}, {error_text}")
+                    return {"error_message": f"API request failed with status {response.status}"}
+        except aiohttp.ClientError as e:
+            logger.error(f"Aiohttp client error: {e}")
+            return {"error_message": "Failed to connect to face analysis service."}
+
+async def validate_and_analyze_photo(message: Message, bot: Bot, is_front: bool) -> Tuple[bool, dict or str]:
+    """Validates photo for correct head pose and runs Face++ analysis."""
+    file_id = message.photo[-1].file_id
+    file_info = await bot.get_file(file_id)
+    file_path = file_info.file_path
+    photo_bytes = await bot.download_file(file_path)
+
+    pose_type = 'front' if is_front else 'profile'
+    
+    try:
+        # 1. Анализ для определения позы
+        detect_result = await detect_face(photo_bytes.read())
+        if 'error_message' in detect_result:
+            logger.error(f"Ошибка Face++ API при валидации: {detect_result['error_message']}")
+            return False, "Не удалось обработать фото. Попробуйте другое."
+        
+        if not detect_result.get('faces'):
+            return False, "Лицо на фото не найдено. Пожалуйста, загрузите более четкое изображение."
+
+        attributes = detect_result['faces'][0].get('attributes', {})
+        headpose = attributes.get('headpose', {})
+        yaw_angle = headpose.get('yaw_angle', 0)
+
+        # 2. Валидация позы
+        is_valid_pose, error_msg = check_head_pose(yaw_angle, is_front)
+        if not is_valid_pose:
+            logger.warning(f"Неверная поза для {pose_type}. Угол: {yaw_angle:.2f}. Сообщение: {error_msg}")
+            return False, error_msg
+
+        logger.info(f"Фото для позы '{pose_type}' успешно прошло валидацию. Угол: {yaw_angle}")
+
+        # 3. Возвращаем полный результат анализа
+        return True, detect_result
+
+    except Exception as e:
+        logger.error(f"Критическая ошибка в validate_and_analyze_photo для {pose_type}: {e}", exc_info=True)
+        return False, "Произошла внутренняя ошибка сервера. Попробуйте позже."
+
+
+def check_head_pose(yaw_angle: float, is_front: bool) -> (bool, str):
+    """Checks if the head pose is suitable for the required photo type (front or profile)."""
+    if is_front:
+        if abs(yaw_angle) > 15:
+            return False, f"❌ **Неверный ракурс.**\n\nВаше лицо повернуто на {abs(yaw_angle):.1f}°. Для фото анфас допустимо отклонение до 15°.\n\n*Пожалуйста, смотрите прямо в камеру.*"
+    else: # is_profile
+        if abs(yaw_angle) < 60 or abs(yaw_angle) > 100:
+            return False, f"❌ **Неверный ракурс.**\n\nВаше лицо повернуто на {abs(yaw_angle):.1f}°. Для фото в профиль нужен поворот около 90° (от 60° до 100°).\n\n*Пожалуйста, поверните голову ровно вбок.*"
+    return True, None
 
 async def validate_photo(photo_bytes: bytes, required_pose: str) -> Tuple[bool, str, Optional[dict]]:
     """
@@ -25,7 +100,8 @@ async def validate_photo(photo_bytes: bytes, required_pose: str) -> Tuple[bool, 
     data = {
         'api_key': FACEPP_API_KEY,
         'api_secret': FACEPP_API_SECRET,
-        'return_attributes': 'headpose,facequality'
+        'return_landmark': '2',  # Запрашиваем 106 точек
+        'return_attributes': 'headpose,facequality,beauty'  # landmark убран отсюда
     }
 
     try:

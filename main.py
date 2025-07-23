@@ -1,65 +1,92 @@
-# --- Загрузка .env должна быть в самом начале ---
 import hmac
 import hashlib
 import json
 from dotenv import load_dotenv
+
+# --- Загрузка .env должна быть в самом начале ---
 load_dotenv()
 
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
+import sys
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
 from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
+from yookassa.domain.notification import WebhookNotification
+
+from core.scheduler import setup_scheduler
+from core.webhooks import yookassa_webhook_handler
 
 # --- Импорт модулей проекта ---
 from core.payments import create_yookassa_payment
-from database import create_db_and_tables, add_user, check_subscription, give_subscription_to_user
-from core.validators import validate_photo
-# Динамические импорты, которые требуют загруженный bot, останутся в функциях
+from database import (
+    create_db_and_tables, add_user, check_subscription, 
+    give_subscription_to_user, get_user, decrement_user_messages, decrement_user_analyses
+)
+from core.validators import validate_and_analyze_photo
+from core.report_logic import generate_report_text
+from core.integrations.deepseek import get_ai_answer
+from core.utils import split_long_message
+
+# --- Состояния FSM ---
+class ChatStates(StatesGroup):
+    getting_front_photo = State()
+    getting_profile_photo = State()
+    chatting = State()
 
 # --- Логирование --- #
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+)
 
 # --- Конфигурация --- #
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(admin_id) for admin_id in os.getenv("ADMIN_IDS", "").split(',') if admin_id]
+ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
+ADMIN_IDS = [int(admin_id) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
 
-# Настройки веб-сервера и вебхуков
 WEB_SERVER_HOST = os.getenv("WEB_SERVER_HOST", "0.0.0.0")
 WEB_SERVER_PORT = int(os.getenv("WEB_SERVER_PORT", 8080))
-BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL") # Например, https://your-app-name.railway.app
+BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL")
 
-# Пути для вебхуков
-TELEGRAM_WEBHOOK_PATH = f'/webhook/{BOT_TOKEN}' # Безопасный путь
+TELEGRAM_WEBHOOK_PATH = f'/webhook/{BOT_TOKEN}'
 YOOKASSA_WEBHOOK_PATH = os.getenv("YOOKASSA_WEBHOOK_PATH", "/yookassa/webhook")
 
-# --- Инициализация --- #
 if not BOT_TOKEN:
     raise ValueError("Токен бота не найден. Проверьте .env файл.")
 
 dp = Dispatcher()
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
-# --- Состояния FSM --- #
-class Form(StatesGroup):
-    waiting_for_front_photo = State()
-    waiting_for_profile_photo = State()
-    chatting_with_ai = State()
-
 # --- Клавиатуры --- #
+def escape_html(text: str) -> str:
+    """Escapes characters for Telegram HTML parsing."""
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+
 def get_main_keyboard(is_admin_user: bool):
     buttons = [
         [InlineKeyboardButton(text="📸 Начать анализ", callback_data="start_analysis")],
-        [InlineKeyboardButton(text="⭐️ Оформить подписку", callback_data="subscribe")],
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="show_profile")],
+        [InlineKeyboardButton(text="💬 Чат с ИИ", callback_data="chat_with_ai")]
     ]
     if is_admin_user:
         buttons.append([InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_panel")])
@@ -75,247 +102,283 @@ def is_admin(user_id: int) -> bool:
 
 # --- Обработчики команд --- #
 @dp.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
-    """Обработчик команды /start. Разделяет админов и обычных пользователей."""
+async def cmd_start(message: types.Message, state: FSMContext, bot: Bot):
     await state.clear()
     user_id = message.from_user.id
-    logging.info(f"🚀 Пользователь {user_id} нажал /start")
-    await add_user(user_id) # Добавляем пользователя в БД, если его там нет
+    logger.info(f"🚀 Пользователь {user_id} нажал /start")
+    await add_user(user_id)
+    
+    is_admin_user = is_admin(user_id)
+    has_subscription = await check_subscription(user_id)
 
-    if is_admin(user_id):
+    if is_admin_user:
+        await message.answer("👑 Добро пожаловать, Администратор!", reply_markup=get_main_keyboard(True))
+        return
+
+    if has_subscription:
+        user = await get_user(user_id)
         await message.answer(
-            "<b>👑 Добро пожаловать, Администратор!</b>\n\n"
-            "У вас полный безлимитный доступ ко всем функциям.\n\n"
-            "Чтобы начать новый анализ, нажмите кнопку ниже.",
-            reply_markup=get_main_keyboard(True)
-        )
-    else:
-        welcome_text = (
-            "<b>Добро пожаловать в HD | Lookism!</b>\n\n"
-            "Я — ваш персональный ИИ-ассистент для анализа внешности. "
-            "Отправьте мне свои фотографии, и я предоставлю детальный разбор "
-            "ваших антропометрических данных и симметрии лица.\n\n"
-            "⭐️ <b>Для начала, нажмите на кнопку ниже.</b>"
-        )
-        await message.answer(welcome_text, reply_markup=get_main_keyboard(False))
-
-@dp.callback_query(F.data == "subscribe")
-async def process_payment_start(cq: CallbackQuery):
-    """Создает и отправляет пользователю ссылку на оплату."""
-    user_id = cq.from_user.id
-    logging.info(f"💰 Пользователь {user_id} инициировал оплату.")
-
-    amount = "100.00"
-    description = "Подписка на HD | Lookism (1 месяц)"
-
-    payment_url, _ = await create_yookassa_payment(amount, description, {'user_id': user_id})
-
-    if payment_url:
-        await cq.message.answer(
-            "Для оформления подписки, пожалуйста, перейдите по ссылке ниже.",
-            reply_markup=get_payment_keyboard(payment_url)
-        )
-    else:
-        await cq.message.answer("Произошла ошибка при создании платежа. Попробуйте позже.")
-    await cq.answer()
-
-@dp.callback_query(F.data == "start_analysis")
-async def cmd_analyze(cq: CallbackQuery, state: FSMContext):
-    """Запускает новый анализ для пользователя."""
-    user_id = cq.from_user.id
-    is_user_admin = is_admin(user_id)
-    has_sub = await check_subscription(user_id)
-
-    if not is_user_admin and not has_sub:
-        await cq.message.answer(
-            "У вас нет активной подписки или попыток анализа. Пожалуйста, оформите подписку.",
+            f"Добро пожаловать! У вас активная подписка до {user.is_active_until.strftime('%d.%m.%Y')}.\n"
+            f"Анализов осталось: {user.analyses_left}\n"
+            f"Сообщений осталось: {user.messages_left}",
             reply_markup=get_main_keyboard(False)
         )
-        await cq.answer()
+    else:
+        await message.answer(
+            "Привет, я ND | Lookism — твой персональный ментор в мире люксмаксинга.\n\n" 
+            "Немного того, что я умею:\n" 
+            "— анализирую анфас + профиль (углы, симметрия, skin и т.д.)\n" 
+            "— ставлю рейтинг Sub-5 → PSL-God с конкретным планом\n" 
+            "— отвечаю на все вопросы с учетом твоих метрик\n\n" 
+            "Я не обычный искусственный интеллект. ND был разработан и запрограммирован специально под улучшение качество жизни. И всё, что ты услышишь от меня, это рабочие и проверенные исследованиями данные.\n" 
+            "Теперь ты можешь смело забыть про коуп методы, гайды с откатами, не долгосрочные результаты."
+        )
+        await process_payment_start(message)
+
+@dp.callback_query(F.data == "subscribe")
+async def process_payment_callback(cq: CallbackQuery):
+    await process_payment_start(cq.message)
+
+async def process_payment_start(message: types.Message):
+    keyboard = InlineKeyboardBuilder()
+    keyboard.add(InlineKeyboardButton(text="💰 ОПЛАТИТЬ", callback_data="pay"))
+    await message.answer(
+        "📜 Подписка: 990Р / месяц\n"
+        "Включает 3 полных анализа и 200 сообщений-консультаций.\n\n"
+        "💲 Нажми кнопку ОПЛАТИТЬ, чтобы активировать доступ.",
+        reply_markup=keyboard.as_markup()
+    )
+
+@dp.callback_query(F.data == "pay")
+async def pay_button_callback(callback: types.CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
+
+    payment = create_yookassa_payment(user_id=user_id, amount="5.00", bot_username=bot_username)
+    if payment:
+        await callback.message.answer(
+            "Ваша ссылка на оплату готова. Нажмите на кнопку ниже, чтобы перейти к оплате.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment.confirmation.confirmation_url)]
+            ])
+        )
+    else:
+        await callback.message.answer("Не удалось создать ссылку на оплату. Попробуйте позже.")
+    await callback.answer()
+
+@dp.callback_query(F.data == "start_analysis")
+async def start_analysis(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    user = await get_user(user_id)
+
+    if is_admin(user_id):
+        await state.set_state(ChatStates.getting_front_photo)
+        await callback.message.answer("Пожалуйста, загрузите фото анфас.")
+        await callback.answer()
         return
 
-    await state.set_state(Form.waiting_for_front_photo)
-    await cq.message.answer(
-        "<b>Начинаем новый анализ.</b>\n\n"
-        "Пожалуйста, отправьте мне ваше фото <b>анфас</b> (лицом к камере)."
-    )
-    await cq.answer()
+    has_subscription = await check_subscription(user_id)
+
+    # Проверка, есть ли у пользователя активная подписка
+    if not has_subscription:
+        await callback.answer("Для доступа к анализу необходима активная подписка.", show_alert=True)
+        return
+
+    if user.analyses_left <= 0:
+        await callback.answer("У вас закончились анализы. Они обновятся с новой подпиской.", show_alert=True)
+        return
+
+    await state.set_state(ChatStates.getting_front_photo)
+    await callback.message.answer("Пожалуйста, загрузите фото анфас.")
+    await callback.answer()
+
+@dp.callback_query(F.data == "show_profile")
+async def show_profile(callback: CallbackQuery):
+    user = await get_user(callback.from_user.id)
+    if user and user.is_active_until and user.is_active_until > datetime.utcnow():
+        days_left = (user.is_active_until - datetime.utcnow()).days
+        profile_text = (
+            f"👤 **Ваш профиль:**\n\n"
+            f"Подписка активна до: **{user.is_active_until.strftime('%d.%m.%Y')}**\n"
+            f"Осталось дней: **{days_left}**\n\n"
+            f"Анализов доступно: **{user.analyses_left}**\n"
+            f"Сообщений доступно: **{user.messages_left}**"
+        )
+        await callback.message.answer(profile_text)
+    else:
+        await callback.message.answer("У вас нет активной подписки.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⭐️ Оформить подписку", callback_data="pay")]
+        ]))
+    await callback.answer()
 
 # --- Обработка фото ---
-@dp.message(Form.waiting_for_front_photo, F.photo)
-async def handle_front_photo(message: Message, state: FSMContext):
-    """Принимает и ВАЛИДИРУЕТ фото анфас."""
-    await message.answer("⏳ Анализирую фото анфас...")
-    is_valid, error_message = await validate_photo(message.photo[-1])
-
-    if not is_valid:
-        await message.answer(f"❌ Ошибка: {error_message} Пожалуйста, загрузите другое фото.")
-        return
-
-    await state.update_data(front_photo_file_id=message.photo[-1].file_id)
-    await state.set_state(Form.waiting_for_profile_photo)
-    await message.answer(
-        "✅ Отлично! Теперь, пожалуйста, отправьте ваше фото в <b>профиль</b> (боком)."
-    )
-
-@dp.message(Form.waiting_for_profile_photo, F.photo)
-async def handle_profile_photo(message: Message, state: FSMContext):
-    """Принимает, ВАЛИДИРУЕТ фото профиля и запускает полный анализ."""
-    await message.answer("⏳ Анализирую фото профиля...")
-    is_valid, error_message = await validate_photo(message.photo[-1], is_profile=True)
-
-    if not is_valid:
-        await message.answer(f"❌ Ошибка: {error_message} Пожалуйста, загрузите другое фото профиля.")
-        return
-
-    await state.update_data(profile_photo_file_id=message.photo[-1].file_id)
-    await message.answer(
-        "✅ Все фотографии приняты! Начинаю глубокий анализ. "
-        "Это может занять несколько минут... Я пришлю отчет, как только он будет готов."
-    )
-    asyncio.create_task(run_analysis(message, state))
-
-async def run_analysis(message: Message, state: FSMContext):
-    """Полный цикл анализа: Face++, расчёт метрик, генерация отчёта DeepSeek."""
-    from analyzers.lookism_metrics import compute_all
-    from core.report_logic import create_report_prompt
-    from core.integrations.deepseek import get_ai_answer
-
+@dp.message(ChatStates.getting_front_photo, F.photo)
+async def handle_front_photo(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
-    user_data = await state.get_data()
-    front_photo_id = user_data.get('front_photo_file_id')
-    profile_photo_id = user_data.get('profile_photo_file_id')
+    logger.info(f"Получено фото анфас от user_id: {user_id}")
 
-    try:
-        metrics = await compute_all(bot, front_photo_id, profile_photo_id)
-        report_prompt = create_report_prompt(metrics)
+    success, result_or_error = await validate_and_analyze_photo(message, bot, is_front=True)
+
+    if success:
+        await state.update_data(front_photo_data=result_or_error)
+        await message.answer("✅ Фото анфас принято. Теперь, пожалуйста, отправьте фото в профиль (вид сбоку).")
+        await state.set_state(ChatStates.getting_profile_photo)
+    else:
+        await message.answer(f"❌ Ошибка: {result_or_error}")
+
+
+@dp.message(ChatStates.getting_profile_photo, F.photo)
+async def handle_profile_photo(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.from_user.id
+    logger.info(f"Получено фото профиля от user_id: {user_id}")
+
+    success, result_or_error = await validate_and_analyze_photo(message, bot, is_front=False)
+
+    if success:
+        logger.info(f"Профильное фото от {user_id} прошло валидацию.")
+        await state.update_data(profile_photo_analysis=result_or_error)
+
+        user_data = await state.get_data()
+        front_analysis_data = user_data.get('front_photo_data', {})
+        profile_analysis_data = user_data.get('profile_photo_analysis', {})
+
+        # Объединяем данные для передачи в run_analysis
+        # Убедимся, что передаем полные данные, полученные от Face++
+        merged_data = {
+            'front_photo_data': front_analysis_data,
+            'profile_photo_data': profile_analysis_data
+        }
         
-        await message.answer("🧠 Отправляю данные нейросети для генерации финального отчета...")
-        ai_report = await get_ai_answer(report_prompt)
+        await run_analysis(user_id, state, bot, merged_data)
 
-        await message.answer("<b>🎉 Ваш персональный отчет готов!</b>")
-        for i in range(0, len(ai_report), 4096):
-            await message.answer(ai_report[i:i + 4096])
+    else:
+        await message.answer(f"❌ Ошибка: {result_or_error}")
 
-        await state.update_data(last_report=ai_report)
-        await state.set_state(Form.chatting_with_ai)
-        await message.answer("Теперь вы можете задать уточняющие вопросы по отчету.")
 
-        if not is_admin(user_id):
-            # TODO: Добавить логику списания попытки из БД
-            pass
+async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data: dict):
+    await bot.send_message(user_id, "✅ Все фото приняты. Начинаю анализ... Это может занять несколько минут.")
+    try:
+        report_text = await generate_report_text(analysis_data)
+
+        # Сохраняем отчет в контекст для будущего чата
+        await state.update_data(last_report=report_text)
+
+        message_parts = split_long_message(report_text)
+        for i, part in enumerate(message_parts):
+            await bot.send_message(user_id, part) # Отключаем Markdown
+            if i < len(message_parts) - 1:
+                await asyncio.sleep(0.5)
+
+        follow_up_message = """
+В анализе и плане улучшения я мог расписать что-то пока что непонятными для тебя словами. Если ты не знаешь, как делать тот или иной метод - спроси. Я и мой ИИ с луксмаксерской базой данных ответим тебе на любые вопросы и поможем тебе стать красивее.
+
+А если ты захочешь сделать новый анализ своих фото и проверить, поменялся ли ты, введи команду /analyze, чтобы запустить повторный анализ.
+"""
+        await bot.send_message(user_id, follow_up_message)
+
+        await state.set_state(ChatStates.chatting)
+        logger.info(f"Пользователь {user_id} вошел в режим чата после получения отчета.")
 
     except Exception as e:
-        logging.error(f"Ошибка в процессе анализа для user {user_id}: {e}", exc_info=True)
-        await message.answer(
-            "Произошла непредвиденная ошибка во время анализа. "
-            "Попробуйте позже или обратитесь в поддержку."
-        )
-        await state.clear()
+        logger.error(f"Критическая ошибка в run_analysis для user_id {user_id}: {e}", exc_info=True)
+        await bot.send_message(user_id, "Произошла критическая ошибка при создании отчета. Пожалуйста, попробуйте позже.")
+        await state.clear() # Очищаем состояние только в случае критической ошибки
 
 # --- Чат с ИИ ---
-@dp.message(Form.chatting_with_ai, F.text)
-async def chat_with_ai_handler(message: Message, state: FSMContext):
-    from core.integrations.deepseek import get_ai_answer
-    user_data = await state.get_data()
-    report_context = user_data.get('last_report')
+@dp.callback_query(F.data == "chat_with_ai")
+async def chat_with_ai_handler(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    user = await get_user(user_id)
+    if not is_admin(user_id) and (not user or not user.is_active_until or user.is_active_until < datetime.utcnow()):
+        await callback.answer("Доступ к чату есть только при активной подписке.", show_alert=True)
+        return
+    
+    await state.set_state(ChatStates.chatting)
+    await callback.message.answer("Вы перешли в режим чата. Напишите ваше сообщение.")
+    await callback.answer()
 
-    wait_message = await message.answer("💬 Думаю над вашим вопросом...")
-    ai_response = await get_ai_answer(message.text, context=report_context)
-    await wait_message.edit_text(ai_response)
+@dp.message(ChatStates.chatting, F.text)
+async def handle_text_in_chat_mode(message: Message, state: FSMContext):
+    """Обрабатывает текстовые сообщения в режиме чата с ИИ."""
+    user_id = message.from_user.id
+    user_question = message.text
+    logger.info(f"Пользователь {user_id} в режиме чата спрашивает: '{user_question}'")
 
-# --- Вебхуки --- #
-async def yookassa_webhook_handler(request: web.Request):
-    """Обрабатывает вебхуки от ЮKassa."""
-    bot_instance = request.app["bot"]
+    temp_message = await message.answer("🤖 Думаю над ответом...")
+
     try:
-        body = await request.read()
-        event_json = json.loads(body)
-    except json.JSONDecodeError:
-        logging.error("Ошибка декодирования JSON от ЮKassa.")
-        return web.Response(status=400, text="Invalid JSON")
+        user_data = await state.get_data()
+        last_report = user_data.get('last_report', 'Контекст предыдущего анализа отсутствует.')
+        chat_history = user_data.get('chat_history', [])
 
-    if YOOKASSA_SECRET_KEY:
-        try:
-            signature_header = request.headers.get("Webhook-Signature")
-            if not signature_header:
-                return web.Response(status=400, text="Missing signature")
-            
-            parts = signature_header.split('=')
-            if len(parts) != 2 or parts[0] != 'v1':
-                 return web.Response(status=400, text="Invalid signature format")
+        # Добавляем текущий вопрос в историю
+        chat_history.append({"role": "user", "content": user_question})
 
-            computed_signature = hmac.new(YOOKASSA_SECRET_KEY.encode(), body, hashlib.sha256).hexdigest()
-            if not hmac.compare_digest(computed_signature, parts[1]):
-                logging.warning("Неверная подпись вебхука ЮKassa.")
-                return web.Response(status=400, text="Invalid signature")
-        except Exception as e:
-            logging.error(f"Ошибка при проверке подписи ЮKassa: {e}")
-            return web.Response(status=500)
+        system_prompt = f"""Ты — элитный AI-аналитик 'HD | Lookism'. Ты продолжаешь диалог с пользователем после предоставления ему детального отчета о внешности. Твоя задача — отвечать на его вопросы, давать пояснения и дополнительные советы. Будь профессионален, используй lookmaxxing-терминологию, но оставайся поддерживающим и полезным.
 
-    logging.info(f"🔔 Получен вебхук от ЮKassa: {event_json.get('event')}")
+Вот предыдущий отчет для контекста:
+{last_report}
+"""
 
-    if event_json.get("event") == "payment.succeeded":
-        payment_object = event_json.get("object", {})
-        metadata = payment_object.get("metadata", {})
-        user_id = metadata.get("user_id")
+        # Формируем промпт из истории сообщений
+        # Мы передаем последние несколько сообщений, чтобы не превышать лимит токенов
+        history_for_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in chat_history[-10:]])
 
-        if user_id:
-            await give_subscription_to_user(int(user_id))
-            await bot_instance.send_message(user_id, "🎉 <b>Поздравляем!</b> Ваша подписка успешно активирована.")
-        else:
-            logging.warning("В вебхуке ЮKassa не найден user_id.")
+        ai_response = await get_ai_answer(system_prompt, history_for_prompt)
 
-    return web.Response(status=200)
+        # Добавляем ответ ИИ в историю
+        chat_history.append({"role": "assistant", "content": ai_response})
+        await state.update_data(chat_history=chat_history)
 
-async def on_startup(app: web.Application):
-    """Действия при запуске приложения."""
-    bot_instance = app["bot"]
-    webhook_url = f"{BASE_WEBHOOK_URL}{TELEGRAM_WEBHOOK_PATH}"
-    await bot_instance.set_webhook(webhook_url, drop_pending_updates=True)
-    logging.info(f"Установлен вебхук на: {webhook_url}")
+        await temp_message.edit_text(ai_response)
 
-async def on_shutdown(app: web.Application):
-    """Действия при остановке приложения."""
-    bot_instance = app["bot"]
-    await bot_instance.delete_webhook()
-    logging.info("Вебхук удален.")
+    except Exception as e:
+        logger.error(f"Ошибка в режиме чата для user_id {user_id}: {e}", exc_info=True)
+        await temp_message.edit_text("Произошла ошибка при обработке вашего вопроса. Попробуйте еще раз.")
 
-# --- Запуск бота --- #
-async def main():
-    await create_db_and_tables() # Инициализация БД
+# --- Запуск бота в режиме Webhook --- #
+async def on_startup(bot: Bot):
+    """Выполняется при старте бота."""
+    # Убедитесь, что BASE_WEBHOOK_URL и YOOKASSA_WEBHOOK_PATH определены в .env и загружены
+    webhook_url = f"{BASE_WEBHOOK_URL}{YOOKASSA_WEBHOOK_PATH}"
+    await bot.set_webhook(webhook_url, drop_pending_updates=True)
+    logger.info(f"Вебхук установлен на: {webhook_url}")
 
-    if not BASE_WEBHOOK_URL:
-        # Режим опроса для локальной разработки
-        logging.info("Запуск в режиме опроса (polling)...")
-        await bot.delete_webhook(drop_pending_updates=True) # На случай, если вебхук был установлен ранее
-        await dp.start_polling(bot)
-    else:
-        # Режим вебхука для продакшена
-        logging.info("Запуск в режиме вебхука...")
-        app = web.Application()
-        app["bot"] = bot
+async def on_shutdown(bot: Bot):
+    """Выполняется при остановке бота."""
+    logger.info("Остановка бота и удаление вебхука...")
+    await bot.delete_webhook()
 
-        # Регистрируем обработчики вебхуков
-        app.router.add_post(YOOKASSA_WEBHOOK_PATH, yookassa_webhook_handler)
-        telegram_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-        telegram_handler.register(app, path=TELEGRAM_WEBHOOK_PATH)
-        
-        # Регистрируем функции startup/shutdown
-        app.on_startup.append(on_startup)
-        app.on_shutdown.append(on_shutdown)
+async def main_webhook():
+    """Основная функция для запуска бота и веб-сервера."""
+    await create_db_and_tables()
 
-        # Запускаем веб-сервер
-        setup_application(app, dp, bot=bot)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, WEB_SERVER_HOST, WEB_SERVER_PORT)
-        await site.start()
-        logging.info(f"Веб-сервер запущен на http://{WEB_SERVER_HOST}:{WEB_SERVER_PORT}")
-        await asyncio.Event().wait() # Бесконечное ожидание
+    # Регистрируем on_startup и on_shutdown
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
 
-if __name__ == "__main__":
+    # Создаем приложение aiohttp
+    app = web.Application()
+    app['bot'] = bot
+
+    # Регистрируем обработчик для YooKassa
+    app.router.add_post(YOOKASSA_WEBHOOK_PATH, yookassa_webhook_handler)
+
+    # Запускаем веб-сервер
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, WEB_SERVER_HOST, WEB_SERVER_PORT)
+    await site.start()
+
+    logger.info(f"Сервер запущен на http://{WEB_SERVER_HOST}:{WEB_SERVER_PORT}")
+
+    # Бесконечный цикл для работы сервера
+    await asyncio.Event().wait()
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     try:
-        asyncio.run(main())
+        asyncio.run(main_webhook())
     except (KeyboardInterrupt, SystemExit):
-        logging.info("Бот остановлен.")
+        logger.info("Бот остановлен вручную.")

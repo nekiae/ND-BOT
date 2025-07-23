@@ -2,7 +2,7 @@ from aiohttp import web
 from aiogram import Bot
 import logging
 
-from core.database import grant_subscription
+from database import give_subscription_to_user as grant_subscription
 
 async def yookassa_webhook_handler(request: web.Request):
     """Обрабатывает входящие вебхуки от YooKassa."""
