@@ -6,45 +6,36 @@ from database import give_subscription_to_user as grant_subscription
 
 async def yookassa_webhook_handler(request: web.Request):
     """Обрабатывает входящие вебхуки от YooKassa."""
+    bot: Bot = request.app['bot']
+    data = None
     try:
         data = await request.json()
         logging.info(f"🔔 Получен вебхук от YooKassa: {data}")
 
-        # Проверяем, что это событие успешной оплаты
         if data.get('event') == 'payment.succeeded':
-            payment_object = data.get('object', {})
-            metadata = payment_object.get('metadata', {})
-            user_id = metadata.get('user_id')
+            payment_info = data.get('object', {})
+            user_id = int(payment_info.get('metadata', {}).get('user_id'))
 
-            if not user_id:
-                logging.error("❌ Ошибка в вебхуке: отсутствует user_id в metadata.")
-                return web.Response(status=400) # Bad Request
-
-            try:
-                user_id = int(user_id)
-                # Выдаем подписку
-                grant_subscription(user_id)
-
-                # Получаем объект бота из контекста приложения
-                bot: Bot = request.app['bot']
+            if user_id:
+                await grant_subscription(user_id)
                 
-                # Отправляем пользователю уведомление об успехе
                 await bot.send_message(
-                    user_id,
-                    "🎉 **Оплата прошла успешно!**\n\n"
-                    "Ваша подписка активна. Теперь вам доступны все эксклюзивные возможности!"
+                    chat_id=user_id,
+                    text="✅ Ваша подписка успешно активирована! Спасибо за поддержку.\n\nТеперь вам доступны все функции бота."
                 )
+                logging.info(f"✅ Подписка для user_id {user_id} успешно активирована.")
+            else:
+                logging.error("Не найден user_id в метаданных платежа.")
 
-            except (ValueError, TypeError) as e:
-                logging.error(f"❌ Некорректный user_id в вебхуке: {user_id}. Ошибка: {e}")
-                return web.Response(status=400) # Bad Request
-            except Exception as e:
-                logging.error(f"❌ Ошибка при обработке вебхука для user_id {user_id}: {e}")
-                return web.Response(status=500) # Internal Server Error
-
-        # Если это не 'payment.succeeded', просто подтверждаем получение
         return web.Response(status=200)
 
     except Exception as e:
-        logging.error(f"❌ Критическая ошибка в обработчике вебхуков: {e}")
-        return web.Response(status=500)
+        user_id_info = ""
+        if data:
+            try:
+                # Пытаемся безопасно извлечь user_id для лога
+                user_id_info = f" для user_id {data['object']['metadata']['user_id']}"
+            except (KeyError, TypeError):
+                pass # Если не получилось, ничего страшного
+        logging.error(f"❌ Ошибка при обработке вебхука{user_id_info}: {e}", exc_info=True)
+        return web.Response(status=500, text="Internal Server Error")

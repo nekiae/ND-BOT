@@ -1,18 +1,28 @@
 import hmac
 import hashlib
 import json
+import os
 from dotenv import load_dotenv
 
 # --- Загрузка .env должна быть в самом начале ---
 load_dotenv()
 
+# --- Загрузка настроек из .env ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL")
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH")
+YOOKASSA_WEBHOOK_PATH = os.getenv("YOOKASSA_WEBHOOK_PATH")
+WEB_SERVER_HOST = os.getenv("WEB_SERVER_HOST")
+WEB_SERVER_PORT = int(os.getenv("WEB_SERVER_PORT", 8080))
+ADMIN_IDS = [int(admin_id) for admin_id in os.getenv("ADMIN_IDS", "").split(',') if admin_id]
+
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 import sys
 
 from aiogram import Bot, Dispatcher, F, types
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -26,7 +36,6 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 from yookassa.domain.notification import WebhookNotification
@@ -340,10 +349,10 @@ async def handle_text_in_chat_mode(message: Message, state: FSMContext):
 # --- Запуск бота в режиме Webhook --- #
 async def on_startup(bot: Bot):
     """Выполняется при старте бота."""
-    # Убедитесь, что BASE_WEBHOOK_URL и YOOKASSA_WEBHOOK_PATH определены в .env и загружены
-    webhook_url = f"{BASE_WEBHOOK_URL}{YOOKASSA_WEBHOOK_PATH}"
+    # Устанавливаем вебхук для Telegram на правильный путь
+    webhook_url = f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}"
     await bot.set_webhook(webhook_url, drop_pending_updates=True)
-    logger.info(f"Вебхук установлен на: {webhook_url}")
+    logger.info(f"Вебхук Telegram установлен на: {webhook_url}")
 
 async def on_shutdown(bot: Bot):
     """Выполняется при остановке бота."""
@@ -358,14 +367,25 @@ async def main_webhook():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
-    # Создаем приложение aiohttp
+    # Создаем веб-приложение aiohttp
     app = web.Application()
+
+    # Ключевое исправление: передаем бота в контекст сервера, чтобы он был доступен в вебхуках
     app['bot'] = bot
 
-    # Регистрируем обработчик для YooKassa
+    # Регистрируем обработчики
+    # 1. Обработчик для Telegram
+    telegram_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    telegram_handler.register(app, path=WEBHOOK_PATH)
+
+    # 2. Обработчик для YooKassa
     app.router.add_post(YOOKASSA_WEBHOOK_PATH, yookassa_webhook_handler)
 
-    # Запускаем веб-сервер
+    # Готовим и запускаем приложение
+    setup_application(app, dp, bot=bot)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, WEB_SERVER_HOST, WEB_SERVER_PORT)
