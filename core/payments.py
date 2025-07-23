@@ -1,6 +1,7 @@
 import os
 from uuid import uuid4
 from yookassa import Configuration, Payment
+from requests.exceptions import HTTPError
 
 # --- Загрузка конфигурации ЮKassa ---
 shop_id = os.getenv("YOOKASSA_SHOP_ID")
@@ -21,21 +22,44 @@ def create_yookassa_payment(user_id: int, amount: str, currency: str = "RUB") ->
         return None
 
     idempotence_key = str(uuid4())
-    payment = Payment.create({
-        "amount": {
-            "value": amount,
-            "currency": currency
-        },
-        "confirmation": {
-            "type": "redirect",
-            # URL, куда вернется пользователь после оплаты. Можно указать URL бота.
-            "return_url": f"https://t.me/{os.getenv('BOT_USERNAME', '')}"
-        },
-        "capture": True,
-        "description": f"Подписка HD | Lookism для пользователя {user_id}",
-        "metadata": {
-            "user_id": str(user_id)
-        }
-    }, idempotence_key)
-
-    return payment
+    try:
+        payment = Payment.create({
+            "amount": {
+                "value": amount,
+                "currency": currency
+            },
+            "confirmation": {
+                "type": "redirect",
+                "return_url": f"https://t.me/{os.getenv('BOT_USERNAME', '')}"
+            },
+            "capture": True,
+            "description": f"Подписка HD | Lookism для пользователя {user_id}",
+            "metadata": {
+                "user_id": str(user_id)
+            },
+            "receipt": {
+                "customer": {
+                    "email": f"user_{user_id}@example.com"
+                },
+                "items": [
+                    {
+                        "description": "Подписка HD | Lookism",
+                        "quantity": "1.00",
+                        "amount": {
+                            "value": amount,
+                            "currency": currency
+                        },
+                        "vat_code": "1" 
+                    }
+                ]
+            }
+        }, idempotence_key)
+        return payment
+    except HTTPError as e:
+        print("❌ Ошибка создания платежа YooKassa!")
+        print(f"Статус-код: {e.response.status_code}")
+        try:
+            print(f"Тело ответа: {e.response.json()}")
+        except Exception:
+            print(f"Тело ответа (не JSON): {e.response.text}")
+        return None
