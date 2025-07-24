@@ -573,7 +573,9 @@ async def on_startup(bot: Bot):
     """Выполняется при старте бота."""
     await set_main_menu(bot)
     # Устанавливаем вебхук для Telegram на правильный путь
-    webhook_url = f"{BASE_WEBHOOK_URL}{TELEGRAM_WEBHOOK_PATH}"
+    # Безопасно обрезаем пробелы и слэш на конце у BASE_WEBHOOK_URL
+    clean_base = (BASE_WEBHOOK_URL or "").strip().rstrip("/")
+    webhook_url = f"{clean_base}{TELEGRAM_WEBHOOK_PATH}"
     await bot.set_webhook(webhook_url, drop_pending_updates=True)
     logger.info(f"Вебхук Telegram установлен на: {webhook_url}")
 
@@ -608,7 +610,8 @@ async def main_webhook():
     app.router.add_post(YOOKASSA_WEBHOOK_PATH, yookassa_webhook_handler)
 
     # Готовим и запускаем приложение
-    setup_application(app, dp, bot=bot)
+    # Регистрируем Telegram вебхук-обработчик на тот же путь, что и в set_webhook
+    setup_application(app, dp, bot=bot, path=TELEGRAM_WEBHOOK_PATH)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, WEB_SERVER_HOST, WEB_SERVER_PORT)
