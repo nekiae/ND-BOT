@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, Dict, Any
 
-from sqlalchemy import TIMESTAMP, BigInteger
+from sqlalchemy import TIMESTAMP, BigInteger, ForeignKey
 from sqlmodel import SQLModel, Field, JSON, Column
 
 
@@ -44,7 +44,7 @@ class Session(SQLModel, table=True):
     __tablename__ = "sessions"
     
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: int = Field(sa_column=Column(BigInteger, foreign_key="users.id"))
+    user_id: int = Field(sa_column=Column(BigInteger, ForeignKey("users.id")))
     front_file_id: Optional[str] = Field(default=None)
     profile_file_id: Optional[str] = Field(default=None)
     status: SessionStatus = Field(default=SessionStatus.PENDING)
