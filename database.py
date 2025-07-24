@@ -35,6 +35,9 @@ async_session = sessionmaker(
 async def create_db_and_tables() -> None:
     """Create database tables."""
     async with engine.begin() as conn:
+        # ВНИМАНИЕ: Эта строка удалит все существующие данные перед созданием новых таблиц.
+        # Это необходимо для применения изменений схемы, таких как переход на BigInteger.
+        await conn.run_sync(SQLModel.metadata.drop_all)
         await conn.run_sync(SQLModel.metadata.create_all)
 
 

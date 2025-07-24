@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, Dict, Any
 
-from sqlalchemy import TIMESTAMP
+from sqlalchemy import TIMESTAMP, BigInteger
 from sqlmodel import SQLModel, Field, JSON, Column
 
 
@@ -29,7 +29,7 @@ class User(SQLModel, table=True):
     
     __tablename__ = "users"
     
-    id: int = Field(primary_key=True)  # Telegram user ID
+    id: int = Field(sa_column=Column(BigInteger, primary_key=True))  # Telegram user ID
     username: Optional[str] = Field(default=None, index=True)
     is_active_until: Optional[datetime] = Field(default=None, sa_column=Column(TIMESTAMP(timezone=True)))
     analyses_left: int = Field(default=0)
@@ -44,7 +44,7 @@ class Session(SQLModel, table=True):
     __tablename__ = "sessions"
     
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="users.id")
+    user_id: int = Field(sa_column=Column(BigInteger, foreign_key="users.id"))
     front_file_id: Optional[str] = Field(default=None)
     profile_file_id: Optional[str] = Field(default=None)
     status: SessionStatus = Field(default=SessionStatus.PENDING)
