@@ -577,7 +577,15 @@ async def on_startup(bot: Bot):
     # Безопасно обрезаем пробелы и слэш на конце у BASE_WEBHOOK_URL
     clean_base = (BASE_WEBHOOK_URL or "").strip().rstrip("/")
     webhook_url = f"{clean_base}{TELEGRAM_WEBHOOK_PATH}"
-    await bot.set_webhook(webhook_url, drop_pending_updates=True)
+    # Разрешаем Telegram присылать нужные типы апдейтов (включая callback_query)
+    allowed_updates = [
+        "message",
+        "callback_query",
+        "inline_query",
+        "chat_member",
+        "my_chat_member"
+    ]
+    await bot.set_webhook(webhook_url, drop_pending_updates=True, allowed_updates=allowed_updates)
     logger.info(f"Вебхук Telegram установлен на: {webhook_url}")
 
 async def on_shutdown(bot: Bot):
