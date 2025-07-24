@@ -17,6 +17,7 @@ WEB_SERVER_PORT = int(os.getenv("WEB_SERVER_PORT", 8080))
 ADMIN_IDS = [int(admin_id) for admin_id in os.getenv("ADMIN_IDS", "").split(',') if admin_id]
 
 import asyncio
+from contextlib import suppress
 import logging
 from datetime import datetime, timezone
 import sys
@@ -24,9 +25,18 @@ import sys
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+
+class AdminStates(StatesGroup):
+    GIVE_SUB_USERNAME = State()
+    REVOKE_SUB_USERNAME = State()
+    BROADCAST_MESSAGE = State() # Состояние для ожидания сообщения для рассылки
+    BROADCAST_MESSAGE = State()
+from datetime import datetime, timezone
+from aiogram.types import BotCommand
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -47,18 +57,18 @@ from core.webhooks import yookassa_webhook_handler
 from core.payments import create_yookassa_payment
 from database import (
     create_db_and_tables, add_user, check_subscription, 
-    give_subscription_to_user, get_user, decrement_user_messages, decrement_user_analyses
+    give_subscription_to_user, get_user, decrement_user_analyses, decrement_user_messages,
+    get_bot_statistics, get_user_by_username, revoke_subscription, get_all_users
 )
 from core.validators import validate_and_analyze_photo
 from core.report_logic import generate_report_text
-from core.integrations.deepseek import get_ai_answer
+from core.integrations.deepseek import get_deepseek_response
 from core.utils import split_long_message
 
 # --- Состояния FSM ---
 class ChatStates(StatesGroup):
     getting_front_photo = State()
     getting_profile_photo = State()
-    chatting = State()
 
 # --- Логирование --- #
 logger = logging.getLogger(__name__)
@@ -94,8 +104,7 @@ def escape_html(text: str) -> str:
 def get_main_keyboard(is_admin_user: bool):
     buttons = [
         [InlineKeyboardButton(text="📸 Начать анализ", callback_data="start_analysis")],
-        [InlineKeyboardButton(text="👤 Профиль", callback_data="show_profile")],
-        [InlineKeyboardButton(text="💬 Чат с ИИ", callback_data="chat_with_ai")]
+
     ]
     if is_admin_user:
         buttons.append([InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_panel")])
@@ -115,7 +124,7 @@ async def cmd_start(message: types.Message, state: FSMContext, bot: Bot):
     await state.clear()
     user_id = message.from_user.id
     logger.info(f"🚀 Пользователь {user_id} нажал /start")
-    await add_user(user_id)
+    await add_user(user_id, message.from_user.username)
     
     is_admin_user = is_admin(user_id)
     has_subscription = await check_subscription(user_id)
@@ -183,7 +192,7 @@ async def start_analysis(callback: CallbackQuery, state: FSMContext):
 
     if is_admin(user_id):
         await state.set_state(ChatStates.getting_front_photo)
-        await callback.message.answer("Пожалуйста, загрузите фото анфас.")
+        await callback.message.answer("Пожалуйста, загрузите фото анфас (лицо прямо).")
         await callback.answer()
         return
 
@@ -199,8 +208,67 @@ async def start_analysis(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.set_state(ChatStates.getting_front_photo)
-    await callback.message.answer("Пожалуйста, загрузите фото анфас.")
+    await callback.message.answer("Пожалуйста, загрузите фото анфас (лицо прямо).")
     await callback.answer()
+
+
+
+@dp.message(Command("analyze"), StateFilter("*"))
+async def analyze_command_handler(message: types.Message, state: FSMContext):
+    """Обрабатывает команду /analyze для запуска нового анализа."""
+    user_id = message.from_user.id
+    user = await get_user(user_id)
+
+    if is_admin(user_id):
+        await state.set_state(ChatStates.getting_front_photo)
+        await message.answer("Пожалуйста, загрузите фото анфас (лицо прямо).")
+        return
+
+    has_subscription = await check_subscription(user_id)
+    if not has_subscription:
+        await message.answer("Для доступа к анализу необходима активная подписка.")
+        return
+
+    if user.analyses_left <= 0:
+        await message.answer("У вас закончились анализы. Они обновятся с новой подпиской.")
+        return
+
+    await state.set_state(ChatStates.getting_front_photo)
+    await message.answer("Пожалуйста, загрузите фото анфас (лицо прямо).")
+
+
+@dp.message(Command("stats"), StateFilter("*"))
+async def show_stats(message: types.Message):
+    """Показывает статистику пользователя: подписка, анализы, сообщения."""
+    user = await get_user(message.from_user.id)
+
+    # 1. Проверяем, есть ли пользователь и дата подписки
+    if not user or not user.is_active_until:
+        await message.answer("У вас нет активной подписки.")
+        return
+
+    # 2. Приводим время из БД к UTC, если оно "наивное"
+    active_until = user.is_active_until
+    if active_until.tzinfo is None:
+        active_until = active_until.replace(tzinfo=timezone.utc)
+
+    # 3. Сравниваем с текущим временем в UTC
+    if active_until < datetime.now(timezone.utc):
+        await message.answer("Срок вашей подписки истек.")
+        return
+
+    # 4. Если все в порядке, форматируем и отправляем статистику
+    active_until_str = active_until.strftime("%d.%m.%Y %H:%M")
+
+    stats_text = (
+        f"<b>📊 Ваша статистика:</b>\n\n"
+        f"▪️ <b>Подписка активна до:</b> {active_until_str} (UTC)\n"
+        f"▪️ <b>Осталось анализов:</b> {user.analyses_left}\n"
+        f"▪️ <b>Осталось сообщений:</b> {user.messages_left}"
+    )
+
+    await message.answer(stats_text)
+
 
 @dp.callback_query(F.data == "show_profile")
 async def show_profile(callback: CallbackQuery):
@@ -294,61 +362,217 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
         await bot.send_message(user_id, "Произошла критическая ошибка при создании отчета. Пожалуйста, попробуйте позже.")
         await state.clear() # Очищаем состояние только в случае критической ошибки
 
-# --- Чат с ИИ ---
-@dp.callback_query(F.data == "chat_with_ai")
-async def chat_with_ai_handler(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    user = await get_user(user_id)
-    if not is_admin(user_id) and (not user or not user.is_active_until or user.is_active_until < datetime.utcnow()):
-        await callback.answer("Доступ к чату есть только при активной подписке.", show_alert=True)
-        return
-    
-    await state.set_state(ChatStates.chatting)
-    await callback.message.answer("Вы перешли в режим чата. Напишите ваше сообщение.")
-    await callback.answer()
 
-@dp.message(ChatStates.chatting, F.text)
-async def handle_text_in_chat_mode(message: Message, state: FSMContext):
-    """Обрабатывает текстовые сообщения в режиме чата с ИИ."""
-    user_id = message.from_user.id
-    user_question = message.text
-    logger.info(f"Пользователь {user_id} в режиме чата спрашивает: '{user_question}'")
 
-    temp_message = await message.answer("🤖 Думаю над ответом...")
+        # --- Новая, надежная логика стриминга ---
+        full_response = ""
+        update_task = None
+        lock = asyncio.Lock()
 
-    try:
-        user_data = await state.get_data()
-        last_report = user_data.get('last_report', 'Контекст предыдущего анализа отсутствует.')
-        chat_history = user_data.get('chat_history', [])
+        async def message_updater():
+            # Эта функция будет работать в фоне и обновлять сообщение
+            last_sent_text = None
+            while True:
+                async with lock:
+                    current_text = full_response
+                
+                if current_text and current_text != last_sent_text:
+                    with suppress(TelegramBadRequest):
+                        await sent_message.edit_text(current_text + " ▌")
+                        last_sent_text = current_text
+                await asyncio.sleep(0.7) # Пауза между обновлениями
 
-        # Добавляем текущий вопрос в историю
+        try:
+            update_task = asyncio.create_task(message_updater())
+            
+            response_generator = get_deepseek_response(user_prompt=user_question, chat_history=chat_history)
+            async for chunk in response_generator:
+                async with lock:
+                    full_response += chunk
+            
+        finally:
+            if update_task:
+                update_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await update_task
+
+        # Финальное обновление без курсора
+        with suppress(TelegramBadRequest):
+            await sent_message.edit_text(full_response)
+
+        # Обновляем историю чата
         chat_history.append({"role": "user", "content": user_question})
-
-        system_prompt = f"""Ты — элитный AI-аналитик 'HD | Lookism'. Ты продолжаешь диалог с пользователем после предоставления ему детального отчета о внешности. Твоя задача — отвечать на его вопросы, давать пояснения и дополнительные советы. Будь профессионален, используй lookmaxxing-терминологию, но оставайся поддерживающим и полезным.
-
-Вот предыдущий отчет для контекста:
-{last_report}
-"""
-
-        # Формируем промпт из истории сообщений
-        # Мы передаем последние несколько сообщений, чтобы не превышать лимит токенов
-        history_for_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in chat_history[-10:]])
-
-        ai_response = await get_ai_answer(system_prompt, history_for_prompt)
-
-        # Добавляем ответ ИИ в историю
-        chat_history.append({"role": "assistant", "content": ai_response})
+        chat_history.append({"role": "assistant", "content": full_response})
         await state.update_data(chat_history=chat_history)
-
-        await temp_message.edit_text(ai_response)
 
     except Exception as e:
         logger.error(f"Ошибка в режиме чата для user_id {user_id}: {e}", exc_info=True)
         await temp_message.edit_text("Произошла ошибка при обработке вашего вопроса. Попробуйте еще раз.")
 
+# --- Универсальный обработчик текста (AI) ---
+
+@dp.message(StateFilter(None), F.text)
+async def handle_all_text(message: types.Message):
+    """Отвечает на любое текстовое сообщение с помощью AI, если пользователь не в другом сценарии."""
+    user_id = message.from_user.id
+    user = await get_user(user_id)
+
+    # Проверка подписки и лимитов
+    if not is_admin(user_id):
+        if not user or not user.is_active_until or user.is_active_until < datetime.now(timezone.utc):
+            await message.answer("Для общения с ИИ необходима активная подписка.")
+            return
+        if user.messages_left <= 0:
+            await message.answer("У вас закончились сообщения для чата с ИИ. Они обновятся с новой подпиской.")
+            return
+
+    user_question = message.text
+    logger.info(f"Пользователь {user_id} спрашивает: '{user_question[:50]}...' (универсальный обработчик)")
+
+    temp_message = await message.answer("...")
+    sent_message = await temp_message.edit_text("ND генерирует ответ...")
+
+    try:
+        full_response = ""
+        stream = get_deepseek_response(user_question, chat_history=[])
+        
+        async for chunk in stream:
+            if chunk:
+                full_response += chunk
+                # Обновляем сообщение не слишком часто, чтобы избежать Rate Limit
+                if len(full_response) % 25 == 0:
+                    try:
+                        await sent_message.edit_text(full_response)
+                    except Exception:
+                        pass # Игнорируем ошибки, если сообщение не изменилось
+        
+        await sent_message.edit_text(full_response) # Отправляем финальный ответ
+
+        # Уменьшаем количество сообщений только после успешного ответа
+        if not is_admin(user_id):
+            await decrement_user_messages(user_id)
+
+    except Exception as e:
+        logger.error(f"Ошибка в универсальном AI-обработчике для user_id {user_id}: {e}", exc_info=True)
+        await sent_message.edit_text("Произошла ошибка при обработке вашего вопроса. Попробуйте еще раз.")
+
+# --- Новая Админ-панель ---
+
+def get_admin_panel_keyboard():
+    """Возвращает клавиатуру для главной панели администратора."""
+    buttons = [
+        [InlineKeyboardButton(text="📊 Статистика бота", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="📢 Сделать рассылку", callback_data="broadcast_start")],
+        [InlineKeyboardButton(text="➕ Выдать подписку", callback_data="give_sub_start")],
+        [InlineKeyboardButton(text="➖ Отозвать подписку", callback_data="revoke_sub_start")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+@dp.callback_query(F.data == "admin_panel")
+async def handle_admin_panel(callback: types.CallbackQuery, state: FSMContext):
+    """Показывает главное меню админ-панели и сбрасывает состояние."""
+    await state.clear()
+    await callback.message.edit_text(
+        "👑 <b>Админ-панель</b> 👑",
+        reply_markup=get_admin_panel_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_stats")
+async def handle_admin_stats(callback: types.CallbackQuery):
+    """Показывает статистику бота во всплывающем окне."""
+    stats = await get_bot_statistics()
+    text = f"📊 Статистика бота:\n- Всего пользователей: {stats['total_users']}\n- Активных подписок: {stats['active_subscriptions']}"
+    await callback.answer(text, show_alert=True)
+
+# --- Управление подписками ---
+@dp.callback_query(F.data.in_(["give_sub_start", "revoke_sub_start"]))
+async def handle_sub_management_start(callback: types.CallbackQuery, state: FSMContext):
+    """Запрашивает username для управления подпиской."""
+    action = callback.data
+    if action == "give_sub_start":
+        await state.set_state(AdminStates.GIVE_SUB_USERNAME)
+        prompt_text = "Введите Telegram username, кому выдать подписку:"
+    else: # revoke_sub_start
+        await state.set_state(AdminStates.REVOKE_SUB_USERNAME)
+        prompt_text = "Введите Telegram username, у кого отозвать подписку:"
+    
+    await callback.message.edit_text(
+        prompt_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_panel")]
+        ])
+    )
+    await callback.answer()
+
+@dp.message(StateFilter(AdminStates.GIVE_SUB_USERNAME, AdminStates.REVOKE_SUB_USERNAME))
+async def process_username_for_sub(message: types.Message, state: FSMContext):
+    """Обрабатывает введенный username и выдает/отзывает подписку."""
+    current_state = await state.get_state()
+    username = message.text.lstrip('@')
+    
+    if current_state == AdminStates.GIVE_SUB_USERNAME:
+        success = await give_subscription_to_user(username)
+        response_text = f"✅ Подписка выдана @{username}." if success else f"❌ Не найден @{username}."
+    else: # REVOKE_SUB_USERNAME
+        success = await revoke_subscription(username)
+        response_text = f"🗑 Подписка @{username} отозвана." if success else f"❌ Не найден @{username}."
+
+    await state.clear()
+    await message.answer(response_text)
+    await message.answer("👑 <b>Админ-панель</b> 👑", reply_markup=get_admin_panel_keyboard())
+
+# --- Логика рассылки ---
+@dp.callback_query(F.data == "broadcast_start")
+async def broadcast_start(callback: types.CallbackQuery, state: FSMContext):
+    """Запускает сценарий рассылки."""
+    await state.set_state(AdminStates.BROADCAST_MESSAGE)
+    await callback.message.edit_text(
+        "Введите сообщение для рассылки. Оно будет отправлено всем пользователям бота.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_panel")]
+        ])
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.BROADCAST_MESSAGE)
+async def process_broadcast_message(message: types.Message, state: FSMContext, bot: Bot):
+    """Обрабатывает сообщение для рассылки и отправляет его."""
+    broadcast_text = message.text
+    await state.clear()
+
+    users = await get_all_users()
+    sent_count = 0
+    failed_count = 0
+
+    await message.answer(f"Начинаю рассылку... Всего пользователей: {len(users)}")
+
+    for user in users:
+        try:
+            await bot.send_message(user.id, broadcast_text)
+            sent_count += 1
+            await asyncio.sleep(0.05)  # Небольшая задержка, чтобы не спамить API
+        except Exception as e:
+            logger.warning(f"Не удалось отправить сообщение пользователю {user.id}: {e}")
+            failed_count += 1
+
+    await message.answer(f"✅ Рассылка завершена!\n\nОтправлено: {sent_count}\nНе удалось отправить: {failed_count}")
+    await message.answer("👑 <b>Админ-панель</b> 👑", reply_markup=get_admin_panel_keyboard())
+
 # --- Запуск бота в режиме Webhook --- #
+async def set_main_menu(bot: Bot):
+    """Создает меню с командами в интерфейсе Telegram."""
+    main_menu_commands = [
+        BotCommand(command='/start', description='🚀 Перезапустить бота'),
+        BotCommand(command='/analyze', description='💡 Новый анализ'),
+        BotCommand(command='/stats', description='📊 Моя статистика')
+    ]
+    await bot.set_my_commands(main_menu_commands)
+
+
 async def on_startup(bot: Bot):
     """Выполняется при старте бота."""
+    await set_main_menu(bot)
     # Устанавливаем вебхук для Telegram на правильный путь
     webhook_url = f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}"
     await bot.set_webhook(webhook_url, drop_pending_updates=True)

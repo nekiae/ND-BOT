@@ -4,6 +4,11 @@ import logging
 
 from database import give_subscription_to_user as grant_subscription
 
+# Предполагаем, что эти значения определены в конфиге
+# Если нет, можно задать их здесь как значения по умолчанию
+SUBSCRIPTION_ANALYSES = 3
+SUBSCRIPTION_MESSAGES = 200
+
 async def yookassa_webhook_handler(request: web.Request):
     """Обрабатывает входящие вебхуки от YooKassa."""
     bot: Bot = request.app['bot']
@@ -17,11 +22,19 @@ async def yookassa_webhook_handler(request: web.Request):
             user_id = int(payment_info.get('metadata', {}).get('user_id'))
 
             if user_id:
-                await grant_subscription(user_id)
-                
+                await grant_subscription(user_id, analyses=SUBSCRIPTION_ANALYSES, messages=SUBSCRIPTION_MESSAGES)
+
+                new_text = (
+                    f"✅ Твоя подписка успешно активирована! Спасибо за поддержку.\n\n"
+                    f"Теперь тебе доступны все функции ND.\n\n"
+                    f"Для начала нажми /analyze и я скажу \"это конец для тебя?\"\n\n"
+                    f"Или напиши мне, и я тебе отвечу, основываясь на терабайтах информации, что в меня загрузили.\n\n"
+                    f"Всего у тебя {SUBSCRIPTION_ANALYSES} фото анализа и {SUBSCRIPTION_MESSAGES} сообщений. Действуй."
+                )
+
                 await bot.send_message(
                     chat_id=user_id,
-                    text="✅ Ваша подписка успешно активирована! Спасибо за поддержку.\n\nТеперь вам доступны все функции бота."
+                    text=new_text
                 )
                 logging.info(f"✅ Подписка для user_id {user_id} успешно активирована.")
             else:

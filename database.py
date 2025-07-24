@@ -5,14 +5,17 @@ from typing import AsyncGenerator
 
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
-from sqlmodel import SQLModel
+from sqlalchemy import TIMESTAMP
+from sqlalchemy.orm import sessionmaker, Mapped, mapped_column
+from sqlmodel import SQLModel, select, func
 
 from models import User, Session, Task
 
 
 # Database URL from environment
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/hd_lookism")
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL is not set in environment variables. Please configure it.")
 
 # Convert postgres:// to postgresql+asyncpg:// if needed
 if DATABASE_URL.startswith("postgres://"):
@@ -46,14 +49,16 @@ async def close_db() -> None:
     await engine.dispose()
 
 
-async def add_user(user_id: int) -> None:
-    """Add a new user to the database if they don't exist."""
+async def add_user(user_id: int, username: str | None = None) -> None:
+    """Add a new user or update their username."""
     async with async_session() as session:
         async with session.begin():
             user = await session.get(User, user_id)
             if not user:
-                session.add(User(id=user_id))
-                await session.commit()
+                session.add(User(id=user_id, username=username))
+            elif user.username != username:
+                user.username = username
+            await session.commit()
 
 async def check_subscription(user_id: int) -> bool:
     """Check if a user has an active subscription."""
@@ -86,9 +91,11 @@ async def get_users_with_expiring_subscription(days_left: int) -> list[User]:
         return list(result.scalars().all())
 
 async def get_user(user_id: int) -> User | None:
-    """Получает пользователя по его ID."""
+    """Получает пользователя по его ID и исправляет часовой пояс на лету."""
     async with async_session() as session:
         user = await session.get(User, user_id)
+        if user and user.is_active_until and user.is_active_until.tzinfo is None:
+            user.is_active_until = user.is_active_until.replace(tzinfo=timezone.utc)
         return user
 
 
@@ -129,3 +136,51 @@ async def give_subscription_to_user(user_id: int, days: int = 30, analyses: int 
             user.messages_left += messages
             
             await session.commit()
+
+async def revoke_subscription(user_id: int) -> bool:
+    """Revokes a user's subscription."""
+    async with async_session() as session:
+        async with session.begin():
+            user = await session.get(User, user_id)
+            if not user or not user.is_active_until:
+                return False  # Нечего отзывать
+
+            user.is_active_until = None
+            user.analyses_left = 0
+            user.messages_left = 0
+            await session.commit()
+            return True
+
+async def get_all_users() -> list[User]:
+    """Получает всех пользователей из базы данных."""
+    async with async_session() as session:
+        result = await session.execute(select(User))
+        return list(result.scalars().all())
+
+
+async def get_user_by_username(username: str) -> User | None:
+    """Finds a user by their username (case-insensitive)."""
+    async with async_session() as session:
+        # Убираем @, если он есть
+        if username.startswith('@'):
+            username = username[1:]
+        
+        result = await session.execute(
+            select(User).where(func.lower(User.username) == username.lower())
+        )
+        return result.scalars().first()
+
+
+async def get_bot_statistics() -> dict:
+    """Retrieves general bot statistics."""
+    async with async_session() as session:
+        total_users = await session.execute(select(func.count(User.id)))
+        
+        active_subscriptions = await session.execute(
+            select(func.count(User.id)).where(User.is_active_until > datetime.now(timezone.utc))
+        )
+        
+        return {
+            "total_users": total_users.scalar_one(),
+            "active_subscriptions": active_subscriptions.scalar_one(),
+        }

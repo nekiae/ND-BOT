@@ -4,7 +4,7 @@ import math
 from datetime import datetime, timedelta
 from typing import Dict, Any, Tuple
 
-from core.integrations.deepseek import get_ai_answer
+from core.integrations.deepseek import get_deepseek_response
 
 # --- Math utility functions ---
 
@@ -102,7 +102,13 @@ async def generate_report_text(metrics_data: dict) -> str:
         
         # --- AI Prompting ---
         system_prompt = """
-Ты — элитный AI-аналитик 'HD | Lookism'. Твоя задача — создать гипердетализированный, профессиональный и абсолютно честный отчет по анализу внешности. Ты общаешься как эксперт, используя продвинутую lookmaxxing-терминологию.
+Ты — элитный AI-аналитик 'ND | Lookism'. Твоя задача — создать гипердетализированный, профессиональный и абсолютно честный отчет по анализу внешности. Ты общаешься как эксперт, используя продвинутую lookmaxxing-терминологию.
+
+ВАЖНО:  СОВЕТЫ ДОЛЖНЫ БЫТЬ ПОЛЕЗНЫМИ И ДЕЛЬНЫМИ!
+
+Пиши текста не так просто, слишком дёшево написано напиши как-то с аурой как некий мыслитель реалист чтобы каждое слово имело вес
+
+чуть пафосном, чуть философском как будто говорю с умным другом. добавлять невероятно умные какие-то предложения понял без дешёвых сравнений по типу мы живём как рыбы без воды вот эту хуйню не надо. 
 
 **КЛЮЧЕВЫЕ ПРАВИЛА:**
 
@@ -217,7 +223,9 @@ __METRICS_BLOCK__
         ).replace('__METRICS_BLOCK__', final_metrics_block)
 
         logging.info("Sending request to DeepSeek API with the new professional template...")
-        response = await get_ai_answer(system_prompt, user_prompt)
+                # Вызываем стриминг-функцию и собираем полный ответ
+        response_generator = get_deepseek_response(user_prompt=user_prompt, chat_history=[])
+        response = "".join([chunk async for chunk in response_generator])
         return response
     except Exception as e:
         logging.error(f"Критическая ошибка в generate_report_text: {e}", exc_info=True)

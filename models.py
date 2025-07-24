@@ -1,9 +1,10 @@
 """Database models for HD | Lookism bot."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, Dict, Any
 
+from sqlalchemy import TIMESTAMP
 from sqlmodel import SQLModel, Field, JSON, Column
 
 
@@ -29,11 +30,12 @@ class User(SQLModel, table=True):
     __tablename__ = "users"
     
     id: int = Field(primary_key=True)  # Telegram user ID
-    is_active_until: Optional[datetime] = Field(default=None)
+    username: Optional[str] = Field(default=None, index=True)
+    is_active_until: Optional[datetime] = Field(default=None, sa_column=Column(TIMESTAMP(timezone=True)))
     analyses_left: int = Field(default=0)
     messages_left: int = Field(default=0)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)})
 
 
 class Session(SQLModel, table=True):
