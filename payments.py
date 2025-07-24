@@ -49,10 +49,26 @@ class PaymentManager:
                     "return_url": return_url
                 },
                 "capture": True,
-                "description": "HD | Lookism - Подписка на месяц",
+                "description": f"Подписка на бота HD | Lookism для пользователя {user_id}",
                 "metadata": {
                     "tg_user_id": str(user_id),
                     "subscription_type": "monthly"
+                },
+                "receipt": {
+                    "customer": {
+                        "email": f"user_{user_id}@placeholder.com"
+                    },
+                    "items": [
+                        {
+                            "description": "Подписка на HD | Lookism (1 месяц)",
+                            "quantity": "1.00",
+                            "amount": {
+                                "value": str(self.subscription_price),
+                                "currency": self.currency
+                            },
+                            "vat_code": "1" # 1 = Без НДС
+                        }
+                    ]
                 }
             }, uuid.uuid4())
             
