@@ -33,8 +33,7 @@ class AdminStates(StatesGroup):
     GIVE_SUB_USERNAME = State()
     REVOKE_SUB_USERNAME = State()
     BROADCAST_MESSAGE = State() # Состояние для ожидания сообщения для рассылки
-    BROADCAST_MESSAGE = State()
-from datetime import datetime, timezone
+
 from aiogram.types import BotCommand
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
@@ -574,7 +573,7 @@ async def on_startup(bot: Bot):
     """Выполняется при старте бота."""
     await set_main_menu(bot)
     # Устанавливаем вебхук для Telegram на правильный путь
-    webhook_url = f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}"
+    webhook_url = f"{BASE_WEBHOOK_URL}{TELEGRAM_WEBHOOK_PATH}"
     await bot.set_webhook(webhook_url, drop_pending_updates=True)
     logger.info(f"Вебхук Telegram установлен на: {webhook_url}")
 
