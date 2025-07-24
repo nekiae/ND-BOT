@@ -34,8 +34,11 @@ class User(SQLModel, table=True):
     is_active_until: Optional[datetime] = Field(default=None, sa_column=Column(TIMESTAMP(timezone=True)))
     analyses_left: int = Field(default=0)
     messages_left: int = Field(default=0)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)})
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(TIMESTAMP(timezone=True)))
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(TIMESTAMP(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
+    )
 
 
 class Session(SQLModel, table=True):
