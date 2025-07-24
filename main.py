@@ -86,7 +86,10 @@ WEB_SERVER_HOST = os.getenv("WEB_SERVER_HOST", "0.0.0.0")
 WEB_SERVER_PORT = int(os.getenv("WEB_SERVER_PORT", 8080))
 BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL")
 
+# Путь, который Telegram будет вызывать (конкретный токен)
 TELEGRAM_WEBHOOK_PATH = f'/webhook/{BOT_TOKEN}'
+# Универсальный путь для aiohttp (любой токен) — двоеточие в токене может ломать роутинг
+TELEGRAM_HANDLER_PATH = '/webhook/{token}'
 YOOKASSA_WEBHOOK_PATH = os.getenv("YOOKASSA_WEBHOOK_PATH", "/yookassa/webhook")
 
 if not BOT_TOKEN:
@@ -610,8 +613,8 @@ async def main_webhook():
     app.router.add_post(YOOKASSA_WEBHOOK_PATH, yookassa_webhook_handler)
 
     # Готовим и запускаем приложение
-    # Регистрируем Telegram вебхук-обработчик на тот же путь, что и в set_webhook
-    setup_application(app, dp, bot=bot, path=TELEGRAM_WEBHOOK_PATH)
+        # Регистрируем Telegram вебхук-обработчик на универсальный путь (поддерживает любой токен)
+    setup_application(app, dp, bot=bot, path=TELEGRAM_HANDLER_PATH)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, WEB_SERVER_HOST, WEB_SERVER_PORT)
