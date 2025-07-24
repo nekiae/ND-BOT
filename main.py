@@ -63,6 +63,7 @@ from core.validators import validate_and_analyze_photo
 from core.report_logic import generate_report_text
 from core.integrations.deepseek import get_deepseek_response
 from core.utils import split_long_message
+import re
 
 # --- Состояния FSM ---
 class ChatStates(StatesGroup):
@@ -76,6 +77,17 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
+
+# --- Утилита для безопасного HTML --- #
+
+def sanitize_html_for_telegram(text: str) -> str:
+    """Добавляет недостающие закрывающие теги <b> / <i>, чтобы Telegram смог спарсить сообщение."""
+    for tag in ("b", "i"):
+        opens = len(re.findall(fr"<{tag}>", text))
+        closes = len(re.findall(fr"</{tag}>", text))
+        if opens > closes:
+            text += "</" + tag + ">" * (opens - closes)
+    return text
 
 # --- Конфигурация --- #
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -399,10 +411,10 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
                     await update_task
 
         # Финальное обновление без курсора
+        html_fixed = sanitize_html_for_telegram(full_response)
         try:
-            await sent_message.edit_text(full_response, parse_mode=ParseMode.HTML)
+            await sent_message.edit_text(html_fixed, parse_mode=ParseMode.HTML)
         except TelegramBadRequest:
-            # В случае кривых HTML-тегов отправляем как обычный текст
             await sent_message.edit_text(full_response, parse_mode=None)
 
         # Обновляем историю чата
@@ -452,7 +464,8 @@ async def handle_all_text(message: types.Message):
                         pass # Игнорируем ошибки, если сообщение не изменилось
         
         try:
-            await sent_message.edit_text(full_response, parse_mode=ParseMode.HTML)  # Отправляем финальный ответ
+            html_fixed = sanitize_html_for_telegram(full_response)
+            await sent_message.edit_text(html_fixed, parse_mode=ParseMode.HTML)  # Отправляем финальный ответ
         except TelegramBadRequest:
             await sent_message.edit_text(full_response, parse_mode=None)
 
