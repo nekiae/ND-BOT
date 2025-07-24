@@ -399,7 +399,10 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
                     await update_task
 
         # Финальное обновление без курсора
-        with suppress(TelegramBadRequest):
+        try:
+            await sent_message.edit_text(full_response, parse_mode=ParseMode.HTML)
+        except TelegramBadRequest:
+            # В случае кривых HTML-тегов отправляем как обычный текст
             await sent_message.edit_text(full_response, parse_mode=None)
 
         # Обновляем историю чата
@@ -448,7 +451,10 @@ async def handle_all_text(message: types.Message):
                     except Exception:
                         pass # Игнорируем ошибки, если сообщение не изменилось
         
-        await sent_message.edit_text(full_response, parse_mode=ParseMode.HTML)  # Отправляем финальный ответ
+        try:
+            await sent_message.edit_text(full_response, parse_mode=ParseMode.HTML)  # Отправляем финальный ответ
+        except TelegramBadRequest:
+            await sent_message.edit_text(full_response, parse_mode=None)
 
         # Уменьшаем количество сообщений только после успешного ответа
         if not is_admin(user_id):
