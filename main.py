@@ -95,14 +95,9 @@ if not BOT_TOKEN:
     raise ValueError("Токен бота не найден. Проверьте .env файл.")
 
 dp = Dispatcher()
-bot = Bot(token=BOT_TOKEN)  # parse_mode will be set explicitly when needed
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
 # --- Клавиатуры --- #
-def escape_markdown(text: str) -> str:
-    """Escapes special characters for Telegram MarkdownV2."""
-    import re
-    return re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}\.!])', r'\\\1', text)
-
 def escape_html(text: str) -> str:
     """Escapes characters for Telegram HTML parsing."""
     return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
@@ -405,7 +400,7 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
 
         # Финальное обновление без курсора
         try:
-            await sent_message.edit_text(escape_markdown(full_response), parse_mode=ParseMode.MARKDOWN_V2)
+            await sent_message.edit_text(full_response, parse_mode=ParseMode.HTML)
         except TelegramBadRequest:
             # В случае кривых HTML-тегов отправляем как обычный текст
             await sent_message.edit_text(full_response, parse_mode=None)
@@ -457,7 +452,7 @@ async def handle_all_text(message: types.Message):
                         pass # Игнорируем ошибки, если сообщение не изменилось
         
         try:
-            await sent_message.edit_text(escape_markdown(full_response), parse_mode=ParseMode.MARKDOWN_V2)  # Отправляем финальный ответ
+            await sent_message.edit_text(full_response, parse_mode=ParseMode.HTML)  # Отправляем финальный ответ
         except TelegramBadRequest:
             await sent_message.edit_text(full_response, parse_mode=None)
 
