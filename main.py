@@ -380,7 +380,7 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
                 
                 if current_text and current_text != last_sent_text:
                     with suppress(TelegramBadRequest):
-                        await sent_message.edit_text(current_text + " ▌")
+                        await sent_message.edit_text(current_text + " ▌", parse_mode=None)
                         last_sent_text = current_text
                 await asyncio.sleep(0.7) # Пауза между обновлениями
 
@@ -400,7 +400,7 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
 
         # Финальное обновление без курсора
         with suppress(TelegramBadRequest):
-            await sent_message.edit_text(full_response)
+            await sent_message.edit_text(full_response, parse_mode=None)
 
         # Обновляем историю чата
         chat_history.append({"role": "user", "content": user_question})
@@ -444,11 +444,11 @@ async def handle_all_text(message: types.Message):
                 # Обновляем сообщение не слишком часто, чтобы избежать Rate Limit
                 if len(full_response) % 25 == 0:
                     try:
-                        await sent_message.edit_text(full_response)
+                        await sent_message.edit_text(full_response, parse_mode=None)
                     except Exception:
                         pass # Игнорируем ошибки, если сообщение не изменилось
         
-        await sent_message.edit_text(full_response) # Отправляем финальный ответ
+        await sent_message.edit_text(full_response, parse_mode=ParseMode.HTML)  # Отправляем финальный ответ
 
         # Уменьшаем количество сообщений только после успешного ответа
         if not is_admin(user_id):
