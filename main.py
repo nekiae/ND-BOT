@@ -78,16 +78,19 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
 
-# --- Утилита для безопасного HTML --- #
+# --- Утилита для безопасного MarkdownV2 --- #
 
-def sanitize_html_for_telegram(text: str) -> str:
-    """Добавляет недостающие закрывающие теги <b> / <i>, чтобы Telegram смог спарсить сообщение."""
-    for tag in ("b", "i"):
-        opens = len(re.findall(fr"<{tag}>", text))
-        closes = len(re.findall(fr"</{tag}>", text))
-        if opens > closes:
-            text += "</" + tag + ">" * (opens - closes)
-    return text
+def sanitize_md_v2(text: str) -> str:
+    """Поправляет MarkdownV2: баланс ** и _; экранирует критические символы, если они одиночны."""
+    # Баланс ** (жирный)
+    if text.count("**") % 2 == 1:
+        text += "**"
+    # Баланс _ (курсив)
+    if text.count("_") % 2 == 1:
+        text += "_"
+    # Экранируем специальные символы, которые часто встречаются и могут ломать разметку
+    special = r"_\*\[\]()~`>#+=|{}.!"
+    return re.sub(fr"([{special}])", r"\\\\\1", text)
 
 # --- Конфигурация --- #
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -107,7 +110,7 @@ if not BOT_TOKEN:
     raise ValueError("Токен бота не найден. Проверьте .env файл.")
 
 dp = Dispatcher()
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
 
 # --- Клавиатуры --- #
 def escape_html(text: str) -> str:
@@ -411,9 +414,9 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
                     await update_task
 
         # Финальное обновление без курсора
-        html_fixed = sanitize_html_for_telegram(full_response)
+        md_fixed = sanitize_md_v2(full_response)
         try:
-            await sent_message.edit_text(html_fixed, parse_mode=ParseMode.HTML)
+            await sent_message.edit_text(md_fixed, parse_mode=ParseMode.MARKDOWN_V2)
         except TelegramBadRequest:
             await sent_message.edit_text(full_response, parse_mode=None)
 
@@ -464,8 +467,8 @@ async def handle_all_text(message: types.Message):
                         pass # Игнорируем ошибки, если сообщение не изменилось
         
         try:
-            html_fixed = sanitize_html_for_telegram(full_response)
-            await sent_message.edit_text(html_fixed, parse_mode=ParseMode.HTML)  # Отправляем финальный ответ
+            md_fixed = sanitize_md_v2(full_response)
+            await sent_message.edit_text(md_fixed, parse_mode=ParseMode.MARKDOWN_V2)  # Отправляем финальный ответ
         except TelegramBadRequest:
             await sent_message.edit_text(full_response, parse_mode=None)
 
