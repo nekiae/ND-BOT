@@ -68,6 +68,7 @@ from core.utils import split_long_message
 class ChatStates(StatesGroup):
     getting_front_photo = State()
     getting_profile_photo = State()
+    chatting = State()  # состояние обычного чата после выдачи отчёта
 
 # --- Логирование --- #
 logger = logging.getLogger(__name__)
@@ -360,7 +361,8 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
     except Exception as e:
         logger.error(f"Критическая ошибка в run_analysis для user_id {user_id}: {e}", exc_info=True)
         await bot.send_message(user_id, "Произошла критическая ошибка при создании отчета. Пожалуйста, попробуйте позже.")
-        await state.clear() # Очищаем состояние только в случае критической ошибки
+        await state.clear()  # Очищаем состояние в случае критической ошибки
+        return  # Прерываем дальнейшее выполнение функции, чтобы избежать ошибок
 
 
 
