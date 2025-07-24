@@ -90,7 +90,7 @@ def sanitize_md_v2(text: str) -> str:
         text += "_"
     # Экранируем специальные символы, которые часто встречаются и могут ломать разметку
     special = r"_\*\[\]()~`>#+=|{}.!"
-    return re.sub(fr"([{special}])", r"\\\\\1", text)
+    return re.sub(fr"([{special}])", r"\\\1", text)
 
 # --- Конфигурация --- #
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -146,7 +146,7 @@ async def cmd_start(message: types.Message, state: FSMContext, bot: Bot):
     has_subscription = await check_subscription(user_id)
 
     if is_admin_user:
-        await message.answer("👑 Добро пожаловать, Администратор!", reply_markup=get_main_keyboard(True))
+        await message.answer("👑 Добро пожаловать, Администратор\!", reply_markup=get_main_keyboard(True))
         return
 
     if has_subscription:
