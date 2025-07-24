@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg-dev \
     libpng-dev \
     libtiff-dev \
-    libtbb2 \
+    libtbb-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
