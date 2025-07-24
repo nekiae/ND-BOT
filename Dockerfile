@@ -17,6 +17,7 @@ WORKDIR /app
 COPY requirements.txt ./
 
 # Install dependencies
+RUN pip install -v --no-cache-dir opencv-python-headless==4.8.0
 RUN pip install -v --no-cache-dir -r requirements.txt
 
 # Copy application code
