@@ -25,9 +25,9 @@ async def yookassa_webhook_handler(request: web.Request):
                 await grant_subscription(user_id, analyses=SUBSCRIPTION_ANALYSES, messages=SUBSCRIPTION_MESSAGES)
 
                 new_text = (
-                    f"✅ Твоя подписка успешно активирована! Спасибо за поддержку.\n\n"
+                    f"✅ Твоя подписка успешно активирована!\n\n"
                     f"Теперь тебе доступны все функции ND.\n\n"
-                    f"Для начала нажми /analyze и я скажу \"это конец для тебя?\"\n\n"
+                    f"Для начала нажми /analyze и я посмотрю на тебя, помогу.\"\n\n"
                     f"Или напиши мне, и я тебе отвечу, основываясь на терабайтах информации, что в меня загрузили.\n\n"
                     f"Всего у тебя {SUBSCRIPTION_ANALYSES} фото анализа и {SUBSCRIPTION_MESSAGES} сообщений. Действуй."
                 )
