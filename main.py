@@ -39,6 +39,11 @@ class AdminAmbassador(StatesGroup):
     waiting_for_username_to_revoke = State()
 
 from aiogram.types import BotCommand
+from aiogram.filters import BaseFilter
+
+class IsAdminFilter(BaseFilter):
+    async def __call__(self, message: types.Message) -> bool:
+        return message.from_user.id in ADMIN_IDS
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     Message,
