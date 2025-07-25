@@ -299,27 +299,25 @@ async def analyze_command_handler(message: types.Message, state: FSMContext):
 
 @dp.message(Command("stats"), StateFilter("*"))
 async def show_stats(message: types.Message):
-    """Показывает статистику пользователя: подписка, анализы, сообщения."""
+    """Показывает статистику пользователя, включая данные амбассадора."""
     user = await get_user(message.from_user.id)
 
-    # 1. Проверяем, есть ли пользователь и дата подписки
+    # Проверяем наличие активной подписки
     if not user or not user.is_active_until:
         await message.answer("У вас нет активной подписки.")
         return
 
-    # 2. Приводим время из БД к UTC, если оно "наивное"
+    # Нормализуем время окончания подписки
     active_until = user.is_active_until
     if active_until.tzinfo is None:
         active_until = active_until.replace(tzinfo=timezone.utc)
 
-    # 3. Сравниваем с текущим временем в UTC
     if active_until < datetime.now(timezone.utc):
         await message.answer("Срок вашей подписки истек.")
         return
 
-    # 4. Если все в порядке, форматируем и отправляем статистику
+    # Базовая статистика
     active_until_str = active_until.strftime("%d.%m.%Y %H:%M")
-
     stats_text = (
         f"<b>📊 Ваша статистика:</b>\n\n"
         f"▪️ <b>Подписка активна до:</b> {active_until_str} (UTC)\n"
@@ -327,7 +325,22 @@ async def show_stats(message: types.Message):
         f"▪️ <b>Осталось сообщений:</b> {user.messages_left}"
     )
 
-    await message.answer(stats_text)
+    # Дополнительная информация для амбассадоров
+    if user.is_ambassador:
+        referral_stats = await get_referral_stats(user.id)
+        bot_user = await message.bot.get_me()
+        referral_link = f"https://t.me/{bot_user.username}?start=ref{user.id}"
+
+        stats_text += (
+            "\n\n<b>👑 Статус Амбассадора</b>\n"
+            "Ваша реферальная ссылка:\n"
+            f"<code>{referral_link}</code>\n\n"
+            "<b>Статистика:</b>\n"
+            f"  - Всего оплативших: {referral_stats['total_paid_referrals']}\n"
+            f"  - Ожидают выплаты: {referral_stats['pending_payouts']}"
+        )
+
+    await message.answer(stats_text, disable_web_page_preview=True)
 
 
 @dp.callback_query(F.data == "show_profile")
