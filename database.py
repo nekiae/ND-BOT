@@ -117,7 +117,7 @@ async def decrement_user_analyses(user_id: int):
             await session.commit()
 
 
-async def give_subscription_to_user(user_id: int, days: int = 30, analyses: int = 3, messages: int = 200) -> None:
+async def give_subscription_to_user(user_id: int, days: int = 30, analyses: int = 2, messages: int = 200) -> None:
     """Grant or extend a subscription for a user."""
     async with async_session() as session:
         async with session.begin():
