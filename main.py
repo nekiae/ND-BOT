@@ -62,7 +62,7 @@ from database import (
 from core.validators import validate_and_analyze_photo
 from core.report_logic import generate_report_text
 from core.integrations.deepseek import get_deepseek_response
-from core.utils import split_long_message
+from core.utils import split_long_message, sanitize_html_for_telegram
 import re
 
 # --- Состояния FSM ---
@@ -80,37 +80,6 @@ logging.basicConfig(
 
 # --- Утилита для безопасного HTML --- #
 
-def sanitize_html_for_telegram(text: str) -> str:
-    """Converts common Markdown styling (bold/italic) to Telegram HTML and ensures tags are balanced.
-
-    1. Replaces **bold** with <b>bold</b>
-    2. Replaces *italic* with <i>italic</i> while ignoring bullet-list markers ("* ")
-    3. Adds any missing closing tags so Telegram does not raise parse errors.
-    """
-    # --- Markdown → HTML conversion --- #
-    # Bold: **text** → <b>text</b>
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
-
-    # Italic: *text* → <i>text</i>
-    # We deliberately ignore the pattern "* " (bullet list) by ensuring the first * is not
-    # followed by whitespace.
-    text = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", r"<i>\1</i>", text, flags=re.DOTALL)
-
-    # --- Balance HTML tags to avoid Telegram "can't parse entities" errors --- #
-    for tag in ("b", "i"):
-        opens = len(re.findall(f"<{tag}>", text))
-        closes = len(re.findall(f"</{tag}>", text))
-        if opens > closes:
-            text += "</" + tag + ">" * (opens - closes)
-        elif closes > opens:
-            # Remove extra closing tags from the end if they outnumber openings (rare but safe-guard)
-            extra = closes - opens
-            text = text[::-1].replace(f">/{tag}<"[::-1], "", extra)[::-1]
-    return text
-
-# --- Конфигурация --- #
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(admin_id) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
 
