@@ -81,24 +81,31 @@ logging.basicConfig(
 # --- Утилита для безопасного HTML --- #
 
 def sanitize_html_for_telegram(text: str) -> str:
-    """Добавляет недостающие закрывающие теги <b> / <i>, чтобы Telegram смог спарсить сообщение."""
-    # --- Markdown ➜ HTML --- #
-    def convert_pairs(src: str, marker: str, open_tag: str, close_tag: str) -> str:
-        parts = src.split(marker)
-        if len(parts) < 3:
-            return src  # нет парных маркеров
-        for i in range(1, len(parts), 2):
-            parts[i] = open_tag + parts[i] + close_tag
-        return ''.join(parts)
+    """Converts common Markdown styling (bold/italic) to Telegram HTML and ensures tags are balanced.
 
-    text = convert_pairs(text, '**', '<b>', '</b>')
-    text = convert_pairs(text, '*', '<i>', '</i>')
+    1. Replaces **bold** with <b>bold</b>
+    2. Replaces *italic* with <i>italic</i> while ignoring bullet-list markers ("* ")
+    3. Adds any missing closing tags so Telegram does not raise parse errors.
+    """
+    # --- Markdown → HTML conversion --- #
+    # Bold: **text** → <b>text</b>
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
 
+    # Italic: *text* → <i>text</i>
+    # We deliberately ignore the pattern "* " (bullet list) by ensuring the first * is not
+    # followed by whitespace.
+    text = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", r"<i>\1</i>", text, flags=re.DOTALL)
+
+    # --- Balance HTML tags to avoid Telegram "can't parse entities" errors --- #
     for tag in ("b", "i"):
-        opens = len(re.findall(fr"<{tag}>", text))
-        closes = len(re.findall(fr"</{tag}>", text))
+        opens = len(re.findall(f"<{tag}>", text))
+        closes = len(re.findall(f"</{tag}>", text))
         if opens > closes:
             text += "</" + tag + ">" * (opens - closes)
+        elif closes > opens:
+            # Remove extra closing tags from the end if they outnumber openings (rare but safe-guard)
+            extra = closes - opens
+            text = text[::-1].replace(f">/{tag}<"[::-1], "", extra)[::-1]
     return text
 
 # --- Конфигурация --- #
@@ -168,13 +175,15 @@ async def cmd_start(message: types.Message, state: FSMContext, bot: Bot):
         )
     else:
         await message.answer(
-            "Привет, я ND | Lookism — твой персональный ментор в мире люксмаксинга.\n\n" 
+            "👋 Привет, я ND | Lookism — твой персональный ментор в мире люксмаксинга.\n\n" 
             "Немного того, что я умею:\n" 
             "— анализирую анфас + профиль (углы, симметрия, skin и т.д.)\n" 
             "— ставлю рейтинг Sub-5 → PSL-God с конкретным планом\n" 
             "— отвечаю на все вопросы с учетом твоих метрик\n\n" 
             "Я не обычный искусственный интеллект. ND был разработан и запрограммирован специально под улучшение качество жизни. И всё, что ты услышишь от меня, это рабочие и проверенные исследованиями данные.\n" 
-            "Теперь ты можешь смело забыть про коуп методы, гайды с откатами, не долгосрочные результаты."
+            "Теперь ты можешь смело забыть про коуп методы, гайды с откатами, не долгосрочные результаты.\n\n"
+            "🎯 Будь с нами:\n"
+            "https://t.me/deltagood"
         )
         await process_payment_start(message)
 
