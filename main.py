@@ -66,7 +66,8 @@ from core.payments import create_yookassa_payment
 from database import (
     create_db_and_tables, add_user, check_subscription, 
     give_subscription_to_user, get_user, decrement_user_analyses, decrement_user_messages,
-    get_bot_statistics, get_user_by_username, revoke_subscription, get_all_users
+    get_bot_statistics, get_user_by_username, revoke_subscription, get_all_users,
+    get_all_ambassadors, get_referral_stats, set_ambassador_status, confirm_referral_payouts
 )
 from core.validators import validate_and_analyze_photo
 from core.report_logic import generate_report_text
