@@ -414,8 +414,12 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
         html_fixed = sanitize_html_for_telegram(full_response)
         try:
             await sent_message.edit_text(html_fixed, parse_mode=ParseMode.HTML)
-        except TelegramBadRequest:
-            await sent_message.edit_text(full_response, parse_mode=None)
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                # Финальный текст совпадает с уже отправленным – игнорируем ошибку
+                pass
+            else:
+                await sent_message.edit_text(full_response, parse_mode=None)
 
         # Обновляем историю чата
         chat_history.append({"role": "user", "content": user_question})
@@ -466,8 +470,12 @@ async def handle_all_text(message: types.Message):
         try:
             html_fixed = sanitize_html_for_telegram(full_response)
             await sent_message.edit_text(html_fixed, parse_mode=ParseMode.HTML)  # Отправляем финальный ответ
-        except TelegramBadRequest:
-            await sent_message.edit_text(full_response, parse_mode=None)
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                # Финальный текст совпадает с уже отправленным – игнорируем ошибку
+                pass
+            else:
+                await sent_message.edit_text(full_response, parse_mode=None)
 
         # Уменьшаем количество сообщений только после успешного ответа
         if not is_admin(user_id):
