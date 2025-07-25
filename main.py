@@ -82,6 +82,9 @@ logging.basicConfig(
 
 def sanitize_html_for_telegram(text: str) -> str:
     """Добавляет недостающие закрывающие теги <b> / <i>, чтобы Telegram смог спарсить сообщение."""
+    # Конвертируем **bold** в <b>bold</b>
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+
     for tag in ("b", "i"):
         opens = len(re.findall(fr"<{tag}>", text))
         closes = len(re.findall(fr"</{tag}>", text))
