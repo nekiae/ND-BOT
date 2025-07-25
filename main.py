@@ -234,7 +234,7 @@ async def pay_button_callback(callback: types.CallbackQuery, bot: Bot):
     bot_info = await bot.get_me()
     bot_username = bot_info.username
 
-    payment = create_yookassa_payment(user_id=user_id, amount="1.00", bot_username=bot_username)
+    payment = create_yookassa_payment(user_id=user_id, amount="990.00", bot_username=bot_username)
     if payment:
         await callback.message.answer(
             "Ваша ссылка на оплату готова. Нажмите на кнопку ниже, чтобы перейти к оплате.",
@@ -420,8 +420,11 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
     try:
         report_text = await generate_report_text(analysis_data)
 
-        # Сохраняем отчет в контекст для будущего чата
-        await state.update_data(last_report=report_text)
+        # Сохраняем отчет и инициализируем chat_history для будущего чата
+        await state.update_data(
+            last_report=report_text,
+            chat_history=[{"role": "assistant", "content": report_text}]
+        )
 
         message_parts = split_long_message(report_text)
         for i, part in enumerate(message_parts):
@@ -435,6 +438,9 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
 А если ты захочешь сделать новый анализ своих фото и проверить, поменялся ли ты, введи команду /analyze, чтобы запустить повторный анализ.
 """
         await bot.send_message(user_id, follow_up_message)
+
+        # Уменьшаем доступные анализы для пользователя
+        await decrement_user_analyses(user_id)
 
         await state.set_state(ChatStates.chatting)
         logger.info(f"Пользователь {user_id} вошел в режим чата после получения отчета.")
@@ -500,9 +506,8 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
         await temp_message.edit_text("Произошла ошибка при обработке вашего вопроса. Попробуйте еще раз.")
 
 # --- Универсальный обработчик текста (AI) ---
-
 @dp.message(StateFilter(None, ChatStates.chatting), F.text)
-async def handle_all_text(message: types.Message):
+async def handle_all_text(message: types.Message, state: FSMContext):
     """Отвечает на любое текстовое сообщение с помощью AI, если пользователь не в другом сценарии."""
     user_id = message.from_user.id
     user = await get_user(user_id)
@@ -516,6 +521,13 @@ async def handle_all_text(message: types.Message):
             await message.answer("У вас закончились сообщения для чата с ИИ. Они обновятся с новой подпиской.")
             return
 
+    # Извлекаем историю чата и последний отчёт
+    data = await state.get_data()
+    chat_history = data.get('chat_history', [])
+    last_report = data.get('last_report')
+    if not chat_history and last_report:
+        chat_history = [{"role": "assistant", "content": last_report}]
+
     user_question = message.text
     logger.info(f"Пользователь {user_id} спрашивает: '{user_question[:50]}...' (универсальный обработчик)")
 
@@ -524,7 +536,7 @@ async def handle_all_text(message: types.Message):
 
     try:
         full_response = ""
-        stream = get_deepseek_response(user_question, chat_history=[])
+        stream = get_deepseek_response(user_question, chat_history=chat_history)
         
         async for chunk in stream:
             if chunk:
@@ -545,6 +557,14 @@ async def handle_all_text(message: types.Message):
                 pass
             else:
                 await sent_message.edit_text(full_response, parse_mode=None)
+
+        # Обновляем историю диалога
+        chat_history.append({"role": "user", "content": user_question})
+        chat_history.append({"role": "assistant", "content": full_response})
+        # Ограничим историю последними 40 репликами, чтобы не раздувать контекст
+        if len(chat_history) > 40:
+            chat_history = chat_history[-40:]
+        await state.update_data(chat_history=chat_history)
 
         # Уменьшаем количество сообщений только после успешного ответа
         if not is_admin(user_id):
