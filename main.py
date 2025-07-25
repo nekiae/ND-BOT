@@ -302,28 +302,36 @@ async def show_stats(message: types.Message):
     """Показывает статистику пользователя, включая данные амбассадора."""
     user = await get_user(message.from_user.id)
 
-    # Проверяем наличие активной подписки
-    if not user or not user.is_active_until:
+    # Проверяем наличие пользователя и подписки
+    if not user:
+        await message.answer("Вы еще не зарегистрированы. Используйте /start.")
+        return
+
+    # Подписка считается активной, если is_active_until есть и в будущем
+    active_until = user.is_active_until
+    if active_until and active_until.tzinfo is None:
+        active_until = active_until.replace(tzinfo=timezone.utc)
+    sub_active = bool(active_until and active_until > datetime.now(timezone.utc))
+
+    # Если подписка не активна и пользователь не амбассадор – выводим прежнее сообщение и выходим
+    if not sub_active and not user.is_ambassador:
         await message.answer("У вас нет активной подписки.")
         return
 
-    # Нормализуем время окончания подписки
-    active_until = user.is_active_until
-    if active_until.tzinfo is None:
-        active_until = active_until.replace(tzinfo=timezone.utc)
+    # Формируем базовую статистику
+    if sub_active:
+        active_until_str = active_until.strftime("%d.%m.%Y %H:%M")
+        subscription_line = f"▪️ <b>Подписка активна до:</b> {active_until_str} (UTC)"
+    else:
+        subscription_line = "▪️ <b>Подписка:</b> отсутствует"
 
-    if active_until < datetime.now(timezone.utc):
-        await message.answer("Срок вашей подписки истек.")
-        return
-
-    # Базовая статистика
-    active_until_str = active_until.strftime("%d.%m.%Y %H:%M")
     stats_text = (
         f"<b>📊 Ваша статистика:</b>\n\n"
-        f"▪️ <b>Подписка активна до:</b> {active_until_str} (UTC)\n"
+        f"{subscription_line}\n"
         f"▪️ <b>Осталось анализов:</b> {user.analyses_left}\n"
         f"▪️ <b>Осталось сообщений:</b> {user.messages_left}"
     )
+
 
     # Дополнительная информация для амбассадоров
     if user.is_ambassador:
