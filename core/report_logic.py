@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Tuple
 
 from core.integrations.deepseek import get_deepseek_response
+from core.utils import sanitize_html_for_telegram
 
 # --- Math utility functions ---
 
@@ -225,8 +226,12 @@ __METRICS_BLOCK__
         logging.info("Sending request to DeepSeek API with the new professional template...")
                 # Вызываем стриминг-функцию и собираем полный ответ
         response_generator = get_deepseek_response(user_prompt=user_prompt, chat_history=[])
-        response = "".join([chunk async for chunk in response_generator])
-        return response
+        raw_response = "".join([chunk async for chunk in response_generator])
+        
+        # Очищаем ответ от Markdown и форматируем в HTML перед отправкой
+        sanitized_response = sanitize_html_for_telegram(raw_response)
+        
+        return sanitized_response
     except Exception as e:
         logging.error(f"Критическая ошибка в generate_report_text: {e}", exc_info=True)
         return "Произошла непредвиденная ошибка при создании отчета. Попробуйте, пожалуйста, еще раз позже."
