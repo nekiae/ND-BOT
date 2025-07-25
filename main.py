@@ -532,12 +532,16 @@ async def process_username_for_sub(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     username = message.text.lstrip('@')
     
-    if current_state == AdminStates.GIVE_SUB_USERNAME:
-        success = await give_subscription_to_user(username)
-        response_text = f"✅ Подписка выдана @{username}." if success else f"❌ Не найден @{username}."
-    else: # REVOKE_SUB_USERNAME
-        success = await revoke_subscription(username)
-        response_text = f"🗑 Подписка @{username} отозвана." if success else f"❌ Не найден @{username}."
+    user_obj = await get_user_by_username(username)
+    if not user_obj:
+        response_text = f"❌ Не найден @{username}."
+    else:
+        if current_state == AdminStates.GIVE_SUB_USERNAME:
+            await give_subscription_to_user(user_obj.id)
+            response_text = f"✅ Подписка выдана @{username}."
+        else:  # REVOKE_SUB_USERNAME
+            success = await revoke_subscription(user_obj.id)
+            response_text = f"🗑 Подписка @{username} отозвана." if success else f"❌ Не найден @{username}."
 
     await state.clear()
     await message.answer(response_text)
