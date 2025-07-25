@@ -42,7 +42,7 @@ class User(SQLModel, table=True):
 
     # Ambassador Referral System Fields
     is_ambassador: bool = Field(default=False, index=True)
-    referred_by_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    referred_by_id: Optional[int] = Field(default=None, sa_column=Column(BigInteger, ForeignKey("users.id")))
     referral_payout_pending: bool = Field(default=False, index=True)
 
 

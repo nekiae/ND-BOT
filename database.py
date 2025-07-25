@@ -49,11 +49,12 @@ async def _ensure_referral_columns(conn):
 async def _ensure_bigint_columns(conn):
     """Ensure critical id columns are BIGINT (int8) to allow large Telegram IDs."""
     alter_statements = [
-        # users.id and users.referred_by_id
+        # Convert child FK columns first to avoid constraint errors
+        "ALTER TABLE IF EXISTS sessions ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT;",
+        "ALTER TABLE IF EXISTS tasks ALTER COLUMN session_id TYPE BIGINT USING session_id::BIGINT;",
+        # Then convert parent and other columns
         "ALTER TABLE IF EXISTS users ALTER COLUMN id TYPE BIGINT USING id::BIGINT;",
-        "ALTER TABLE IF EXISTS users ALTER COLUMN referred_by_id TYPE BIGINT USING referred_by_id::BIGINT;",
-        # sessions.user_id
-        "ALTER TABLE IF EXISTS sessions ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT;"
+        "ALTER TABLE IF EXISTS users ALTER COLUMN referred_by_id TYPE BIGINT USING referred_by_id::BIGINT;"
     ]
     for stmt in alter_statements:
         try:
