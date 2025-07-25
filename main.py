@@ -501,7 +501,7 @@ async def run_analysis(user_id: int, state: FSMContext, bot: Bot, analysis_data:
 
 # --- Универсальный обработчик текста (AI) ---
 
-@dp.message(StateFilter(None), F.text)
+@dp.message(StateFilter(None, ChatStates.chatting), F.text)
 async def handle_all_text(message: types.Message):
     """Отвечает на любое текстовое сообщение с помощью AI, если пользователь не в другом сценарии."""
     user_id = message.from_user.id
