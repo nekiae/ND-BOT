@@ -4,8 +4,8 @@ import os
 from typing import AsyncGenerator
 
 from datetime import datetime, timedelta, timezone
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy import TIMESTAMP
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSession
+from sqlalchemy import text, TIMESTAMP
 from sqlalchemy.orm import sessionmaker, Mapped, mapped_column
 from sqlmodel import SQLModel, select, func
 
