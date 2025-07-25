@@ -233,7 +233,7 @@ async def pay_button_callback(callback: types.CallbackQuery, bot: Bot):
     bot_info = await bot.get_me()
     bot_username = bot_info.username
 
-    payment = create_yookassa_payment(user_id=user_id, amount="5.00", bot_username=bot_username)
+    payment = create_yookassa_payment(user_id=user_id, amount="990.00", bot_username=bot_username)
     if payment:
         await callback.message.answer(
             "Ваша ссылка на оплату готова. Нажмите на кнопку ниже, чтобы перейти к оплате.",
