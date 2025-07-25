@@ -6,7 +6,7 @@ from database import give_subscription_to_user as grant_subscription
 
 # Предполагаем, что эти значения определены в конфиге
 # Если нет, можно задать их здесь как значения по умолчанию
-SUBSCRIPTION_ANALYSES = 3
+SUBSCRIPTION_ANALYSES = 2
 SUBSCRIPTION_MESSAGES = 200
 
 async def yookassa_webhook_handler(request: web.Request):
@@ -27,7 +27,7 @@ async def yookassa_webhook_handler(request: web.Request):
                 new_text = (
                     f"✅ Твоя подписка успешно активирована!\n\n"
                     f"Теперь тебе доступны все функции ND.\n\n"
-                    f"Для начала нажми /analyze и я посмотрю на тебя, помогу.\"\n\n"
+                    f"Для начала нажми /analyze и я посмотрю на тебя, помогу.\n\n"
                     f"Или напиши мне, и я тебе отвечу, основываясь на терабайтах информации, что в меня загрузили.\n\n"
                     f"Всего у тебя {SUBSCRIPTION_ANALYSES} фото анализа и {SUBSCRIPTION_MESSAGES} сообщений. Действуй."
                 )

@@ -32,7 +32,8 @@ from aiogram.fsm.state import State, StatesGroup
 class AdminStates(StatesGroup):
     GIVE_SUB_USERNAME = State()
     REVOKE_SUB_USERNAME = State()
-    BROADCAST_MESSAGE = State() # Состояние для ожидания сообщения для рассылки
+    BROADCAST_MESSAGE = State()  # Состояние для ожидания сообщения для рассылки
+    USER_STATS_USERNAME = State()  # Ожидаем username для запроса статистики пользователя
 
 class AdminAmbassador(StatesGroup):
     waiting_for_username_to_set = State()
@@ -66,7 +67,8 @@ from core.payments import create_yookassa_payment
 from database import (
     create_db_and_tables, add_user, check_subscription, 
     give_subscription_to_user, get_user, decrement_user_analyses, decrement_user_messages,
-    get_bot_statistics, get_user_by_username, revoke_subscription, get_all_users,
+    get_bot_statistics, get_subscription_stats, get_pending_payouts_count,
+    get_user_detailed_stats, get_user_by_username, revoke_subscription, get_all_users,
     get_all_ambassadors, get_referral_stats, set_ambassador_status, confirm_referral_payouts
 )
 from core.validators import validate_and_analyze_photo
@@ -115,7 +117,6 @@ def escape_html(text: str) -> str:
 def get_main_keyboard(is_admin_user: bool):
     buttons = [
         [InlineKeyboardButton(text="📸 Начать анализ", callback_data="start_analysis")],
-        [InlineKeyboardButton(text="Профиль 👤", callback_data="show_profile")]
     ]
     if is_admin_user:
         buttons.append([InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_panel")])
@@ -563,7 +564,42 @@ def get_admin_panel_keyboard():
     keyboard.row(InlineKeyboardButton(text="➕ Выдать подписку", callback_data="give_sub_start"))
     keyboard.row(InlineKeyboardButton(text="➖ Отозвать подписку", callback_data="revoke_sub_start"))
     keyboard.row(InlineKeyboardButton(text="👑 Амбассадоры", callback_data="manage_ambassadors"))
+    keyboard.row(InlineKeyboardButton(text="🔍 Статистика пользователя", callback_data="user_stats_start"))
     return keyboard.as_markup()
+
+@dp.callback_query(F.data == "user_stats_start", IsAdminFilter())
+async def user_stats_start(callback: types.CallbackQuery, state: FSMContext):
+    """Запрашивает username для показа его статистики."""
+    await state.set_state(AdminStates.USER_STATS_USERNAME)
+    await callback.message.edit_text("Введите username пользователя:")
+    await callback.answer()
+
+
+@dp.message(AdminStates.USER_STATS_USERNAME, F.text, IsAdminFilter())
+async def process_user_stats(message: types.Message, state: FSMContext):
+    username = message.text.strip().lstrip('@')
+    user_obj = await get_user_by_username(username)
+    if not user_obj:
+        await message.answer(f"❌ Пользователь @{username} не найден.")
+    else:
+        stats = await get_user_detailed_stats(user_obj.id)
+        sub_line = (
+            f"Активна до: {stats['active_until'].strftime('%d.%m.%Y')}" if stats['subscription_active'] else "Нет активной подписки"
+        )
+        text = (
+            f"👤 <b>Пользователь @{username}</b> (ID {user_obj.id})\n\n"
+            f"📅 Подписка: {sub_line}\n"
+            f"📊 Анализов осталось: {stats['analyses_left']} | Сообщений: {stats['messages_left']}\n"
+        )
+        if stats['is_ambassador']:
+            text += (
+                "\n👑 <b>Амбассадор</b>\n"
+                f"Всего оплативших: {stats['total_paid_referrals']}\n"
+                f"Ожидают выплаты: {stats['pending_payouts']}"
+            )
+        await message.answer(text, disable_web_page_preview=True)
+    await state.clear()
+
 
 @dp.callback_query(F.data == "admin_panel")
 async def handle_admin_panel(callback: types.CallbackQuery, state: FSMContext):
@@ -577,9 +613,20 @@ async def handle_admin_panel(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_stats")
 async def handle_admin_stats(callback: types.CallbackQuery):
-    """Показывает статистику бота во всплывающем окне."""
-    stats = await get_bot_statistics()
-    text = f"📊 Статистика бота:\n- Всего пользователей: {stats['total_users']}\n- Активных подписок: {stats['active_subscriptions']}"
+    """Показывает расширенную статистику бота."""
+    basic = await get_bot_statistics()
+    subs = await get_subscription_stats()
+    total_amb = len(await get_all_ambassadors())
+    pending = await get_pending_payouts_count()
+
+    text = (
+        "📊 <b>Статистика бота</b>\n\n"
+        f"👥 Пользователей всего: <b>{basic['total_users']}</b>\n"
+        f"💳 Активных подписок: <b>{subs['total_paying']}</b>\n"
+        f"➕ Новых за 24ч: <b>{subs['new_24h']}</b> | 48ч: <b>{subs['new_48h']}</b> | 7д: <b>{subs['new_7d']}</b>\n\n"
+        f"👑 Амбассадоров: <b>{total_amb}</b>\n"
+        f"💰 Ожидают выплат: <b>{pending}</b>"
+    )
     await callback.answer(text, show_alert=True)
 
 # --- Управление Амбассадорами ---

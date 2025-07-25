@@ -296,3 +296,68 @@ async def get_bot_statistics() -> dict:
             "total_users": total_users.scalar_one(),
             "active_subscriptions": active_subscriptions.scalar_one(),
         }
+
+async def get_subscription_stats() -> dict:
+    """Returns total active paying subs and new paid subs in last 24h/48h/7d."""
+    now = datetime.now(timezone.utc)
+    async with async_session() as session:
+        # Total active
+        total_paid_q = await session.execute(
+            select(func.count(User.id)).where(User.is_active_until > now)
+        )
+        total_paid = total_paid_q.scalar_one()
+
+        # Helpers
+        async def _count_since(ts):
+            result = await session.execute(
+                select(func.count(User.id)).where(
+                    User.is_active_until > now,
+                    User.updated_at >= ts,
+                )
+            )
+            return result.scalar_one()
+
+        # New in the last periods
+        new_24h = await _count_since(now - timedelta(hours=24))
+        new_48h = await _count_since(now - timedelta(hours=48))
+        new_7d = await _count_since(now - timedelta(days=7))
+
+        return {
+            "total_paying": total_paid,
+            "new_24h": new_24h,
+            "new_48h": new_48h,
+            "new_7d": new_7d,
+        }
+
+async def get_pending_payouts_count() -> int:
+    """Returns number of referred users awaiting payout across all ambassadors."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(func.count(User.id)).where(User.referral_payout_pending == True)
+        )
+        return result.scalar_one()
+
+
+async def get_user_detailed_stats(user_id: int) -> dict:
+    """Returns detailed stats about a single user for admin view."""
+    async with async_session() as session:
+        user = await session.get(User, user_id)
+        if not user:
+            return {}
+
+        # Make sure timezone aware
+        if user.is_active_until and user.is_active_until.tzinfo is None:
+            user.is_active_until = user.is_active_until.replace(tzinfo=timezone.utc)
+
+        stats = {
+            "user": user,
+            "subscription_active": user.is_active_until and user.is_active_until > datetime.now(timezone.utc),
+            "active_until": user.is_active_until,
+            "analyses_left": user.analyses_left,
+            "messages_left": user.messages_left,
+            "is_ambassador": user.is_ambassador,
+        }
+
+        if user.is_ambassador:
+            stats.update(await get_referral_stats(user_id))
+        return stats
