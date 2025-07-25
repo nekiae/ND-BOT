@@ -82,8 +82,21 @@ logging.basicConfig(
 
 def sanitize_html_for_telegram(text: str) -> str:
     """Добавляет недостающие закрывающие теги <b> / <i>, чтобы Telegram смог спарсить сообщение."""
-    # Конвертируем **bold** в <b>bold</b>
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    # Конвертируем **bold** и *italic* в HTML, игнорируя маркеры списка
+    def bold_repl(match):
+        inner = match.group(1)
+        if inner.strip().startswith('-'):
+            return match.group(0)  # оставляем как есть, это список
+        return f"<b>{inner}</b>"
+
+    def italic_repl(match):
+        inner = match.group(1)
+        if inner.strip().startswith('-'):
+            return match.group(0)
+        return f"<i>{inner}</i>"
+
+    text = re.sub(r"\*\*(.*?)\*\*", bold_repl, text, flags=re.S)
+    text = re.sub(r"(?<!-)\*(?![\s*-])(.*?)\*(?!\S)", italic_repl, text, flags=re.S)
 
     for tag in ("b", "i"):
         opens = len(re.findall(fr"<{tag}>", text))
