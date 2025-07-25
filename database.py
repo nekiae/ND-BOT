@@ -32,11 +32,24 @@ async_session = sessionmaker(
 )
 
 
+async def _ensure_referral_columns(conn):
+    """Runs raw SQL to add new referral-related columns if they are missing."""
+    sql_statements = [
+        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS is_ambassador BOOLEAN DEFAULT FALSE;",
+        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS referred_by_id BIGINT;",
+        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS referral_payout_pending BOOLEAN DEFAULT FALSE;"
+    ]
+    for stmt in sql_statements:
+        await conn.execute(text(stmt))
+
 async def create_db_and_tables() -> None:
     """Create database tables."""
     async with engine.begin() as conn:
-
+        logger.info("Creating database tables if they do not exist…")
         await conn.run_sync(SQLModel.metadata.create_all)
+        # Ensure new columns exist for referral system
+        await _ensure_referral_columns(conn)
+        logger.info("Database setup complete")
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
