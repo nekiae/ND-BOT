@@ -265,7 +265,11 @@ async def start_analysis(callback: CallbackQuery, state: FSMContext):
         return
 
     if user.analyses_left <= 0:
-        await callback.answer("У вас закончились анализы. Они обновятся с новой подпиской.", show_alert=True)
+        await callback.answer("У вас закончились анализы.", show_alert=True)
+        await callback.message.answer(
+            "Ваши анализы закончились. Чтобы получить новые, продлите подписку.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⭐️ Оформить подписку", callback_data="pay")]])
+        )
         return
 
     await state.set_state(ChatStates.getting_front_photo)
@@ -291,7 +295,10 @@ async def analyze_command_handler(message: types.Message, state: FSMContext):
         return
 
     if user.analyses_left <= 0:
-        await message.answer("У вас закончились анализы. Они обновятся с новой подпиской.")
+        await message.answer(
+            "Ваши анализы закончились. Чтобы получить новые, продлите подписку.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⭐️ Оформить подписку", callback_data="pay")]])
+        )
         return
 
     await state.set_state(ChatStates.getting_front_photo)
