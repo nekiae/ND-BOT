@@ -45,6 +45,23 @@ async def _ensure_referral_columns(conn):
     for stmt in sql_statements:
         await conn.execute(text(stmt))
 
+
+async def _ensure_bigint_columns(conn):
+    """Ensure critical id columns are BIGINT (int8) to allow large Telegram IDs."""
+    alter_statements = [
+        # users.id and users.referred_by_id
+        "ALTER TABLE IF EXISTS users ALTER COLUMN id TYPE BIGINT USING id::BIGINT;",
+        "ALTER TABLE IF EXISTS users ALTER COLUMN referred_by_id TYPE BIGINT USING referred_by_id::BIGINT;",
+        # sessions.user_id
+        "ALTER TABLE IF EXISTS sessions ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT;"
+    ]
+    for stmt in alter_statements:
+        try:
+            await conn.execute(text(stmt))
+        except Exception as exc:
+            # Ignore errors where type is already bigint or column missing.
+            logger.debug(f"Skipping alter column statement due to: {exc}")
+
 async def create_db_and_tables() -> None:
     """Create database tables."""
     async with engine.begin() as conn:
@@ -52,6 +69,8 @@ async def create_db_and_tables() -> None:
         await conn.run_sync(SQLModel.metadata.create_all)
         # Ensure new columns exist for referral system
         await _ensure_referral_columns(conn)
+        # Ensure critical ID columns are BIGINT to fit Telegram IDs
+        await _ensure_bigint_columns(conn)
         logger.info("Database setup complete")
 
 
