@@ -11,6 +11,9 @@ from sqlmodel import SQLModel, select, func
 
 from models import User, Session, Task
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # Database URL from environment
 DATABASE_URL = os.getenv("DATABASE_URL")
