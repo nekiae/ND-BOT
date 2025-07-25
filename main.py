@@ -63,7 +63,6 @@ from core.validators import validate_and_analyze_photo
 from core.report_logic import generate_report_text
 from core.integrations.deepseek import get_deepseek_response
 from core.utils import split_long_message, sanitize_html_for_telegram
-import re
 
 # --- Состояния FSM ---
 class ChatStates(StatesGroup):
@@ -78,8 +77,9 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
 
-# --- Утилита для безопасного HTML --- #
-
+# --- Конфигурация --- #
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(admin_id) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
 

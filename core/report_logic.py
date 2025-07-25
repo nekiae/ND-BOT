@@ -228,7 +228,7 @@ __METRICS_BLOCK__
         response_generator = get_deepseek_response(user_prompt=user_prompt, chat_history=[])
         raw_response = "".join([chunk async for chunk in response_generator])
         
-        # Очищаем ответ от Markdown и форматируем в HTML перед отправкой
+        # Очищаем финальный HTML-ответ от Markdown-артефактов перед отправкой
         sanitized_response = sanitize_html_for_telegram(raw_response)
         
         return sanitized_response

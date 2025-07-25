@@ -1,47 +1,8 @@
 import asyncio
-import re
 from typing import List
+import re
 
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
-
-def sanitize_html_for_telegram(text: str) -> str:
-    """
-    Converts specific Markdown patterns to Telegram-compatible HTML tags and cleans the output.
-    - Converts **bold** to <b>bold</b>
-    - Converts *italic* to <i>italic</i>
-    - Ignores asterisks used for lists (e.g., "* item").
-    - Balances <b> and <i> tags to prevent Telegram parsing errors.
-    """
-    # Convert **text** to <b>text</b>, but not if it's part of a list item like '* '
-    text = re.sub(r'\*\*([^\*\n][^\*]*?)\*\*', r'<b>\1</b>', text)
-    # Convert *text* to <i>text</i>, but not if it's a list marker
-    text = re.sub(r'(?<!\*)\*([^\*\n][^\*]*?)\*(?!\*)', r'<i>\1</i>', text)
-
-    # Balance <b> tags
-    open_b = text.count('<b>')
-    close_b = text.count('</b>')
-    if open_b > close_b:
-        text += '</b>' * (open_b - close_b)
-    elif close_b > open_b:
-        # This is trickier, we'll remove the last closing tags
-        for _ in range(close_b - open_b):
-            last_pos = text.rfind('</b>')
-            if last_pos != -1:
-                text = text[:last_pos] + text[last_pos+4:]
-
-    # Balance <i> tags
-    open_i = text.count('<i>')
-    close_i = text.count('</i>')
-    if open_i > close_i:
-        text += '</i>' * (open_i - close_i)
-    elif close_i > open_i:
-        for _ in range(close_i - open_i):
-            last_pos = text.rfind('</i>')
-            if last_pos != -1:
-                text = text[:last_pos] + text[last_pos+4:]
-
-    return text
-
 
 def split_long_message(text: str) -> List[str]:
     """
@@ -93,3 +54,31 @@ def split_long_message(text: str) -> List[str]:
 
     # Clean up any empty parts that might have been created
     return [p.strip() for p in parts if p.strip()]
+
+def sanitize_html_for_telegram(text: str) -> str:
+    """Converts common Markdown styling (bold/italic) to Telegram HTML and ensures tags are balanced.
+
+    1. Replaces **bold** with <b>bold</b>
+    2. Replaces *italic* with <i>italic</i> while ignoring bullet-list markers (\"* \")
+    3. Adds any missing closing tags so Telegram does not raise parse errors.
+    """
+    # --- Markdown → HTML conversion --- #
+    # Bold: **text** → <b>text</b>
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
+
+    # Italic: *text* → <i>text</i>
+    # We deliberately ignore the pattern \"* \" (bullet list) by ensuring the first * is not
+    # followed by whitespace.
+    text = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", r"<i>\1</i>", text, flags=re.DOTALL)
+
+    # --- Balance HTML tags to avoid Telegram \"can't parse entities\" errors --- #
+    for tag in ("b", "i"):
+        opens = len(re.findall(f"<{tag}>", text))
+        closes = len(re.findall(f"</{tag}>", text))
+        if opens > closes:
+            text += "</" + tag + ">" * (opens - closes)
+        elif closes > opens:
+            # Remove extra closing tags from the end if they outnumber openings (rare but safe-guard)
+            extra = closes - opens
+            text = text[::-1].replace(f">/{tag}<"[::-1], "", extra)[::-1]
+    return text
