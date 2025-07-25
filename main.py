@@ -25,7 +25,7 @@ import sys
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart, Command, StateFilter
+from aiogram.filters import CommandStart, CommandObject, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -33,6 +33,10 @@ class AdminStates(StatesGroup):
     GIVE_SUB_USERNAME = State()
     REVOKE_SUB_USERNAME = State()
     BROADCAST_MESSAGE = State() # Состояние для ожидания сообщения для рассылки
+
+class AdminAmbassador(StatesGroup):
+    waiting_for_username_to_set = State()
+    waiting_for_username_to_revoke = State()
 
 from aiogram.types import BotCommand
 from aiogram.exceptions import TelegramBadRequest
@@ -105,7 +109,7 @@ def escape_html(text: str) -> str:
 def get_main_keyboard(is_admin_user: bool):
     buttons = [
         [InlineKeyboardButton(text="📸 Начать анализ", callback_data="start_analysis")],
-
+        [InlineKeyboardButton(text="Профиль 👤", callback_data="show_profile")]
     ]
     if is_admin_user:
         buttons.append([InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_panel")])
@@ -119,13 +123,60 @@ def get_payment_keyboard(payment_url: str):
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
+@dp.callback_query(F.data == "show_profile")
+async def show_profile(callback: types.CallbackQuery, bot: Bot):
+    """Shows the user's profile with subscription and referral stats."""
+    user_id = callback.from_user.id
+    user = await get_user(user_id)
+
+    if not user or not user.is_active_until or user.is_active_until < datetime.now(timezone.utc):
+        await callback.answer("У вас нет активной подписки.", show_alert=True)
+        return
+
+    response_text = (
+        f"<b>👤 Ваш профиль</b>\n\n"
+        f"Подписка активна до: {user.is_active_until.strftime('%d.%m.%Y')}\n"
+        f"Анализов осталось: {user.analyses_left}\n"
+        f"Сообщений осталось: {user.messages_left}"
+    )
+
+    if user.is_ambassador:
+        stats = await get_referral_stats(user.id)
+        bot_user = await bot.get_me()
+        referral_link = f"https://t.me/{bot_user.username}?start=ref{user.id}"
+        
+        response_text += (
+            f"\n\n<b>👑 Статус Амбассадора</b>\n"
+            f"Ваша реферальная ссылка:\n<code>{referral_link}</code>\n\n"
+            f"<b>Статистика:</b>\n"
+            f"  - Всего оплативших: {stats['total_paid_referrals']}\n"
+            f"  - Ожидают выплаты: {stats['pending_payouts']}"
+        )
+
+    await callback.message.answer(response_text, disable_web_page_preview=True)
+    await callback.answer()
+
+
 # --- Обработчики команд --- #
 @dp.message(CommandStart())
-async def cmd_start(message: types.Message, state: FSMContext, bot: Bot):
+async def cmd_start(message: types.Message, state: FSMContext, bot: Bot, command: CommandObject):
     await state.clear()
     user_id = message.from_user.id
+    # Parse referral code from the start command
+    referred_by_id = None
+    if command.args and command.args.startswith('ref'):
+        try:
+            ref_id_str = command.args[3:]
+            if ref_id_str.isdigit():
+                referred_by_id = int(ref_id_str)
+                logger.info(f"User {user_id} was referred by {referred_by_id}")
+            else:
+                logger.warning(f"Invalid referral code format: {command.args}")
+        except (ValueError, TypeError):
+            logger.warning(f"Could not parse referral code: {command.args}")
+
     logger.info(f"🚀 Пользователь {user_id} нажал /start")
-    await add_user(user_id, message.from_user.username)
+    await add_user(user_id, message.from_user.username, referred_by_id=referred_by_id)
     
     is_admin_user = is_admin(user_id)
     has_subscription = await check_subscription(user_id)
@@ -479,13 +530,13 @@ async def handle_all_text(message: types.Message):
 
 def get_admin_panel_keyboard():
     """Возвращает клавиатуру для главной панели администратора."""
-    buttons = [
-        [InlineKeyboardButton(text="📊 Статистика бота", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="📢 Сделать рассылку", callback_data="broadcast_start")],
-        [InlineKeyboardButton(text="➕ Выдать подписку", callback_data="give_sub_start")],
-        [InlineKeyboardButton(text="➖ Отозвать подписку", callback_data="revoke_sub_start")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text="📊 Статистика бота", callback_data="admin_stats"))
+    keyboard.row(InlineKeyboardButton(text="📢 Сделать рассылку", callback_data="broadcast_start"))
+    keyboard.row(InlineKeyboardButton(text="➕ Выдать подписку", callback_data="give_sub_start"))
+    keyboard.row(InlineKeyboardButton(text="➖ Отозвать подписку", callback_data="revoke_sub_start"))
+    keyboard.row(InlineKeyboardButton(text="👑 Амбассадоры", callback_data="manage_ambassadors"))
+    return keyboard.as_markup()
 
 @dp.callback_query(F.data == "admin_panel")
 async def handle_admin_panel(callback: types.CallbackQuery, state: FSMContext):
@@ -504,7 +555,116 @@ async def handle_admin_stats(callback: types.CallbackQuery):
     text = f"📊 Статистика бота:\n- Всего пользователей: {stats['total_users']}\n- Активных подписок: {stats['active_subscriptions']}"
     await callback.answer(text, show_alert=True)
 
-# --- Управление подписками ---
+# --- Управление Амбассадорами ---
+@dp.callback_query(F.data.startswith("confirm_payouts_"), IsAdminFilter())
+async def confirm_payouts(callback: types.CallbackQuery):
+    """Confirms referral payouts for a specific ambassador."""
+    try:
+        ambassador_id = int(callback.data.split("_")[2])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка: неверный ID амбассадора.", show_alert=True)
+        return
+
+    cleared_count = await confirm_referral_payouts(ambassador_id)
+    
+    if cleared_count > 0:
+        await callback.answer(f"✅ Сброшено {cleared_count} ожидающих выплат.", show_alert=True)
+    else:
+        await callback.answer("Нет выплат для сброса.", show_alert=True)
+    
+    # Refresh the list
+    await list_ambassadors(callback, should_answer=False)
+
+
+@dp.callback_query(F.data == "list_ambassadors", IsAdminFilter())
+async def list_ambassadors(callback: types.CallbackQuery, should_answer: bool = True):
+    """Displays a list of all ambassadors with their stats."""
+    ambassadors = await get_all_ambassadors()
+    if not ambassadors:
+        await callback.answer("Список амбассадоров пуст.", show_alert=True)
+        return
+
+    response_text = "<b>👑 Список Амбассадоров:</b>\n\n"
+    keyboard = InlineKeyboardBuilder()
+
+    for amb in ambassadors:
+        stats = await get_referral_stats(amb.id)
+        username = f"@{amb.username}" if amb.username else f"ID: {amb.id}"
+        response_text += (
+            f"<b>{username}</b>\n"
+            f"  - Ожидают выплаты: <code>{stats['pending_payouts']}</code>\n"
+            f"  - Всего оплативших: <code>{stats['total_paid_referrals']}</code>\n"
+        )
+        # Add a button to reset pending payouts if there are any
+        if stats['pending_payouts'] > 0:
+            response_text += f"  - <code><a href='tg://user?id={amb.id}'>Сбросить выплаты</a></code>\n\n"
+            keyboard.add(InlineKeyboardButton(
+                text=f"Сбросить {stats['pending_payouts']} для {username}", 
+                callback_data=f"confirm_payouts_{amb.id}"
+            ))
+        else:
+            response_text += "\n"
+    
+    keyboard.adjust(1) # Make buttons full width
+    keyboard.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_ambassadors"))
+
+    await callback.message.edit_text(response_text, reply_markup=keyboard.as_markup())
+    if should_answer:
+        await callback.answer()
+
+
+@dp.callback_query(F.data == "manage_ambassadors", IsAdminFilter())
+async def manage_ambassadors_start(callback: types.CallbackQuery):
+    """Shows the ambassador management panel."""
+    keyboard = InlineKeyboardBuilder()
+    keyboard.add(InlineKeyboardButton(text="📋 Список", callback_data="list_ambassadors"))
+    keyboard.add(InlineKeyboardButton(text="➕ Назначить", callback_data="set_ambassador_start"))
+    keyboard.add(InlineKeyboardButton(text="➖ Снять статус", callback_data="revoke_ambassador_start"))
+    keyboard.row(InlineKeyboardButton(text="⬅️ Назад в админ-панель", callback_data="admin_panel"))
+    
+    await callback.message.edit_text("👑 Управление Амбассадорами", reply_markup=keyboard.as_markup())
+    await callback.answer()
+
+@dp.callback_query(F.data.in_(["set_ambassador_start", "revoke_ambassador_start"]), IsAdminFilter())
+async def handle_ambassador_management_start(callback: types.CallbackQuery, state: FSMContext):
+    """Prompts for a username to manage ambassador status."""
+    action = callback.data
+    if action == "set_ambassador_start":
+        await state.set_state(AdminAmbassador.waiting_for_username_to_set)
+        prompt_text = "Введите Telegram username, чтобы назначить его амбассадором:"
+    else: # revoke_ambassador_start
+        await state.set_state(AdminAmbassador.waiting_for_username_to_revoke)
+        prompt_text = "Введите Telegram username, чтобы снять статус амбассадора:"
+
+    await callback.message.edit_text(prompt_text)
+    await callback.answer()
+
+
+@dp.message(AdminAmbassador.waiting_for_username_to_set, F.text, IsAdminFilter())
+@dp.message(AdminAmbassador.waiting_for_username_to_revoke, F.text, IsAdminFilter())
+async def process_username_for_ambassador(message: types.Message, state: FSMContext):
+    """Processes the username and sets or revokes ambassador status."""
+    current_state = await state.get_state()
+    username = message.text.strip()
+    user = await get_user_by_username(username)
+
+    if not user:
+        await message.answer(f"❌ Пользователь с username @{username} не найден.")
+        await state.clear()
+        return
+
+    if current_state == AdminAmbassador.waiting_for_username_to_set:
+        success = await set_ambassador_status(user.id, True)
+        response_text = f"✅ @{username} теперь является амбассадором." if success else f"❌ Не удалось назначить @{username} амбассадором."
+    else: # waiting_for_username_to_revoke
+        success = await set_ambassador_status(user.id, False)
+        response_text = f"🗑 Статус амбассадора для @{username} снят." if success else f"❌ Не удалось снять статус с @{username}."
+
+    await message.answer(response_text)
+    await state.clear()
+
+
+# --- Управление подписками --- #
 @dp.callback_query(F.data.in_(["give_sub_start", "revoke_sub_start"]))
 async def handle_sub_management_start(callback: types.CallbackQuery, state: FSMContext):
     """Запрашивает username для управления подпиской."""

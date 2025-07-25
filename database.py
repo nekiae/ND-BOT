@@ -50,13 +50,13 @@ async def close_db() -> None:
     await engine.dispose()
 
 
-async def add_user(user_id: int, username: str | None = None) -> None:
-    """Add a new user or update their username."""
+async def add_user(user_id: int, username: str | None = None, referred_by_id: int | None = None) -> None:
+    """Add a new user or update their username, optionally with a referrer."""
     async with async_session() as session:
         async with session.begin():
             user = await session.get(User, user_id)
             if not user:
-                session.add(User(id=user_id, username=username))
+                session.add(User(id=user_id, username=username, referred_by_id=referred_by_id))
             elif user.username != username:
                 user.username = username
             await session.commit()
@@ -118,7 +118,7 @@ async def decrement_user_analyses(user_id: int):
 
 
 async def give_subscription_to_user(user_id: int, days: int = 30, analyses: int = 2, messages: int = 200) -> None:
-    """Grant or extend a subscription for a user."""
+    """Grants or extends a subscription and handles referral logic."""
     async with async_session() as session:
         async with session.begin():
             user = await session.get(User, user_id)
@@ -135,6 +135,10 @@ async def give_subscription_to_user(user_id: int, days: int = 30, analyses: int 
             
             user.analyses_left += analyses
             user.messages_left += messages
+
+            # Handle referral logic: if user was referred and this is their first payment, mark for payout
+            if user.referred_by_id and not user.referral_payout_pending:
+                user.referral_payout_pending = True
             
             await session.commit()
 
@@ -170,6 +174,77 @@ async def get_user_by_username(username: str) -> User | None:
             select(User).where(func.lower(User.username) == username.lower())
         )
         return result.scalars().first()
+
+
+async def set_ambassador_status(user_id: int, status: bool) -> bool:
+    """Sets or unsets ambassador status for a user."""
+    async with async_session() as session:
+        async with session.begin():
+            user = await session.get(User, user_id)
+            if not user:
+                return False
+            user.is_ambassador = status
+            await session.commit()
+            return True
+
+
+async def get_all_ambassadors() -> list[User]:
+    """Retrieves all users with ambassador status."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.is_ambassador == True)
+        )
+        return list(result.scalars().all())
+
+
+async def get_referral_stats(ambassador_id: int) -> dict:
+    """Gets referral statistics for a specific ambassador."""
+    async with async_session() as session:
+        # Count referrals pending payout
+        pending_result = await session.execute(
+            select(func.count(User.id)).where(
+                User.referred_by_id == ambassador_id,
+                User.referral_payout_pending == True
+            )
+        )
+        pending_count = pending_result.scalar_one()
+
+        # Count total paid referrals (have an active subscription)
+        total_paid_result = await session.execute(
+            select(func.count(User.id)).where(
+                User.referred_by_id == ambassador_id,
+                User.is_active_until != None
+            )
+        )
+        total_paid_count = total_paid_result.scalar_one()
+
+        return {
+            "pending_payouts": pending_count,
+            "total_paid_referrals": total_paid_count
+        }
+
+
+async def confirm_referral_payouts(ambassador_id: int) -> int:
+    """Resets the pending payout status for an ambassador's referrals."""
+    async with async_session() as session:
+        async with session.begin():
+            # Find users to update
+            stmt = select(User).where(
+                User.referred_by_id == ambassador_id,
+                User.referral_payout_pending == True
+            )
+            results = await session.execute(stmt)
+            users_to_update = results.scalars().all()
+            
+            count = 0
+            for user in users_to_update:
+                user.referral_payout_pending = False
+                count += 1
+
+            if count > 0:
+                await session.commit()
+            
+            return count
 
 
 async def get_bot_statistics() -> dict:

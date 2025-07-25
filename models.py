@@ -40,6 +40,11 @@ class User(SQLModel, table=True):
         sa_column=Column(TIMESTAMP(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
     )
 
+    # Ambassador Referral System Fields
+    is_ambassador: bool = Field(default=False, index=True)
+    referred_by_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    referral_payout_pending: bool = Field(default=False, index=True)
+
 
 class Session(SQLModel, table=True):
     """Photo analysis session."""
