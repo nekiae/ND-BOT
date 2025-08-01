@@ -40,7 +40,7 @@ class FacePlusPlusClient:
             "api_key": self.api_key,
             "api_secret": self.api_secret,
             "return_landmark": "1",
-            "return_attributes": "beauty,emotion,age,gender,headpose"
+            "return_attributes": "beauty,emotion,age,gender,headpose,skinstatus,dark_circle"
         }
         
         files = {"image_file": ("image.jpg", image_bytes, "image/jpeg")}

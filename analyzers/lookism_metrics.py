@@ -46,7 +46,11 @@ LANDMARK_INDICES = {
     'right_eye_outer': 'right_eye_right_corner',
     'left_pupil': 'left_eye_pupil',
     'right_pupil': 'right_eye_pupil',
+
     'nose_tip': 'nose_tip',
+    'nose_root': 'nose_contour_upper_middle',
+    'nose_left': 'nose_left',
+    'nose_right': 'nose_right',
     'subnasale': 'nose_contour_lower_middle',
     'stomion': 'mouth_upper_lip_top',
     'menton': 'contour_chin',
@@ -108,16 +112,20 @@ def compute_mid_face_ratio(landmarks: Dict) -> float:
     except Exception:
         return 0.65
 
-def compute_gonial_angle(landmarks: Dict) -> float:
-    """Gonial angle: ∠(jaw_left, gonion, ramus)"""
+def compute_gonial_angle(landmarks: Dict):
+    """Returns gonial angle (°) if both jaw corners detected; else 'N/A'."""
     try:
         jaw_left = get_point(landmarks, 'contour_left9')
-        gonion = get_point(landmarks, 'contour_chin')
         jaw_right = get_point(landmarks, 'contour_right9')
-        
-        return compute_angle_3points(jaw_left, gonion, jaw_right)
+        gonion = get_point(landmarks, 'contour_chin')
+
+        # Check that both jaw points detected (non-zero). Face++ returns (0,0) when landmark missing.
+        if jaw_left == (0.0, 0.0) or jaw_right == (0.0, 0.0):
+            return 'N/A'
+
+        return round(compute_angle_3points(jaw_left, gonion, jaw_right), 1)
     except Exception:
-        return 120.0
+        return 'N/A'
 
 def compute_bizygomatic_width(landmarks: Dict) -> float:
     """Bizygomatic width: dist(zygion_L, zygion_R)"""
@@ -268,80 +276,181 @@ def compute_jaw_prominence(landmarks: Dict) -> float:
     except Exception:
         return 0.85
 
-def compute_skin_score(face_data: Dict) -> float:
-    """Skin score: 100 - (acne+stain)*0.5 - (100-health)"""
+def compute_skin_metrics(face_data: Dict) -> Dict:
+    """Extracts all skin metrics and computes a single, recalibrated skin score."""
     try:
-        skin_status = face_data.get('skinstatus', {})
-        acne = skin_status.get('acne', 0)
-        stain = skin_status.get('stain', 0) 
-        health = skin_status.get('health', 80)
-        
-        score = 100 - (acne + stain) * 0.5 - (100 - health)
-        return max(0, min(100, score))
-    except Exception:
-        return 75.0
+        attributes = face_data.get('attributes', {})
+        skin_status = attributes.get('skinstatus', {})
+        face_quality = attributes.get('facequality', {}).get('value', 80)
 
-def compute_overall_quality(face_data: Dict) -> float:
-    """Overall quality: min(facequality, skin_score)"""
-    try:
-        face_quality = face_data.get('facequality', {}).get('value', 80)
-        skin_score = compute_skin_score(face_data)
-        return min(face_quality, skin_score)
+        raw_health = skin_status.get('health', 50)
+        raw_acne = skin_status.get('acne', 50)
+        raw_stain = skin_status.get('stain', 50)
+
+        # --- Normalise raw API metrics so that 100 = лучшая кожа, 0 = худшая ---
+        def _clamp(val: float) -> float:
+            return max(0.0, min(100.0, val))
+
+        def normalize_skinstatus(health: float, acne: float, stain: float):
+            """Map Face++ raw skinstatus to intuitive 0-100 where 100 = best."""
+            try:
+                # Face++ health выдаёт диапазон 0-10 для большинства лиц.
+                # Эмпирически 0 = плохо, 8-10 = отлично. Линейно растягиваем и
+                # добавляем сдвиг, чтобы «1» не было катастрофой.
+                health_norm = health * 12.5 + 20   # 0→20, 8→120 → clamp 100
+
+                # acne / stain: Face++ БОЛЬШЕ = ХУЖЕ (0 — идеальная кожа).
+                # Переводим «чем выше raw, тем хуже» в 0-100 с небольшим бонусом за идеальную кожу
+                acne_norm  = 120 - 1.2 * acne   # raw 0→100, 50→60, 80→24
+                stain_norm = 120 - 1.2 * stain
+
+                return (
+                    _clamp(health_norm),
+                    _clamp(acne_norm),
+                    _clamp(stain_norm),
+                )
+            except Exception:
+                return (50.0, 50.0, 50.0)
+
+        health_norm, acne_norm, stain_norm = normalize_skinstatus(raw_health, raw_acne, raw_stain)
+
+        # --- Composite Skin Score ---
+        weighted_internal = (
+            0.45 * health_norm +  # здоровье кожи
+            0.40 * acne_norm   +  # чистота / acne
+            0.15 * stain_norm     # пятна / porphyrin
+        )
+
+        final_score = round(0.7 * weighted_internal + 0.3 * face_quality, 1)
+
+        return {
+            'skin_score': final_score,
+            'health': round(health_norm, 2),  # нормализованная витрина
+            'acne': round(acne_norm, 2),
+            'stain': round(stain_norm, 2)
+        }
     except Exception:
-        return 75.0
+        return {
+            'skin_score': 0,
+            'health': 'N/A',
+            'acne': 'N/A',
+            'stain': 'N/A',
+        }
+
+def compute_nose_chin_distance(profile_landmarks: Dict):
+    """Distance between nose tip and chin (px). 'N/A' if landmarks missing."""
+    try:
+        chin = get_point(profile_landmarks, 'contour_chin')
+        nose_tip = get_point(profile_landmarks, 'nose_tip')
+        if chin == (0.0,0.0) or nose_tip == (0.0,0.0):
+            return 'N/A'
+        return round(compute_distance(chin, nose_tip), 1)
+    except Exception:
+        return 'N/A'
+
+
+def compute_nose_width(front_landmarks: Dict):
+    """Nose width (alar width) from left to right nostril (px)."""
+    try:
+        nl = get_point(front_landmarks, 'nose_left')
+        nr = get_point(front_landmarks, 'nose_right')
+        if nl == (0.0,0.0) or nr == (0.0,0.0):
+            return 'N/A'
+        return round(compute_distance(nl, nr), 1)
+    except Exception:
+        return 'N/A'
+
+
+def compute_nose_length(front_landmarks: Dict):
+    """Nose length: root to tip (px)."""
+    try:
+        root = get_point(front_landmarks, 'nose_contour_upper_middle')
+        tip = get_point(front_landmarks, 'nose_tip')
+        if root == (0.0,0.0) or tip == (0.0,0.0):
+            return 'N/A'
+        return round(compute_distance(root, tip), 1)
+    except Exception:
+        return 'N/A'
+
+
+def compute_nose_projection(profile_landmarks: Dict):
+    """Horizontal projection of nose tip beyond nose root (px). 'N/A' if landmarks missing."""
+    try:
+        nose_tip = get_point(profile_landmarks, 'nose_tip')
+        nose_root = get_point(profile_landmarks, 'nose_contour_upper_middle')
+        if nose_tip == (0.0,0.0) or nose_root == (0.0,0.0):
+            return 'N/A'
+        return round(abs(nose_tip[0] - nose_root[0]), 1)
+    except Exception:
+        return 'N/A'
+
+
+def compute_chin_projection(profile_landmarks: Dict):
+    """Approximate horizontal chin projection vs subnasale line (px).
+    Positive → chin ahead, negative → retruded. Returns 'N/A' if landmarks missing."""
+    try:
+        chin = get_point(profile_landmarks, 'contour_chin')
+        subnasale = get_point(profile_landmarks, 'nose_contour_lower_middle')
+        if chin == (0.0,0.0):
+            return 'N/A'
+        # Prefer subnasale; fallback to nose_tip
+        if subnasale == (0.0,0.0):
+            subnasale = get_point(profile_landmarks, 'nose_tip')
+            if subnasale == (0.0,0.0):
+                return 'N/A'
+        # Horizontal distance (absolute) – positive = chin protrudes
+        return round(abs(chin[0] - subnasale[0]), 1)
+    except Exception:
+        return 'N/A'
+
 
 def compute_all(front_data: Dict, profile_data: Dict) -> Dict:
     """Compute all looksmax metrics from Face++ data using both front and profile views."""
     if not front_data or 'landmark' not in front_data:
         return {}
 
-    front_landmarks = front_data['landmark']
-    profile_landmarks = profile_data.get('landmark') if profile_data else None
+    front_landmarks = front_data.get('landmark', {})
+    profile_landmarks = profile_data.get('landmark') if profile_data else {}
+    attributes = front_data.get('attributes', {})
+    beauty = attributes.get('beauty', {})
 
-    # --- Metrics from Frontal View ---
-    canthal_tilt = compute_canthal_tilt(front_landmarks)
-    interpupil = compute_interpupil_distance(front_landmarks)
-    mid_face_ratio = compute_mid_face_ratio(front_landmarks)
-    bizygomatic_width = compute_bizygomatic_width(front_landmarks)
-    bigonial_width = compute_bigonial_width(front_landmarks)
-    fwhr = compute_facial_width_height_ratio(front_landmarks)
+    # --- Skin and Quality Metrics ---
+    skin_metrics = compute_skin_metrics(front_data)
+
+    # --- Geometric Metrics ---
     thirds = compute_facial_thirds(front_landmarks)
-    symmetry = compute_symmetry_score(front_landmarks)
-    eye_whr = compute_eye_whr(front_landmarks)
-    lip_fullness = compute_lip_fullness(front_landmarks)
-    jaw_prominence = compute_jaw_prominence(front_landmarks)
 
-    # --- Metrics from Profile View ---
-    gonial_angle = compute_gonial_angle(profile_landmarks) if profile_landmarks else 'N/A'
-
-    # --- Soft tissue & Beauty metrics (from primary front photo) ---
-    skin_score = compute_skin_score(front_data)
-    overall_quality = compute_overall_quality(front_data)
-    beauty = front_data.get('beauty', {})
-    beauty_male = beauty.get('male_score', 50)
-    beauty_female = beauty.get('female_score', 50)
-    beauty_avg = (beauty_male + beauty_female) / 2
-
-    return {
-        'canthal_tilt': canthal_tilt,
-        'interpupil_distance': interpupil,
-        'mid_face_ratio': mid_face_ratio,
-        'gonial_angle': gonial_angle,
-        'bizygomatic_width': bizygomatic_width,
-        'bigonial_width': bigonial_width,
-        'facial_width_height_ratio': fwhr,
+    all_metrics = {
+        'canthal_tilt': compute_canthal_tilt(front_landmarks),
+        'interpupil_distance': compute_interpupil_distance(front_landmarks),
+        'mid_face_ratio': compute_mid_face_ratio(front_landmarks),
+        'gonial_angle': compute_gonial_angle(profile_landmarks) if profile_landmarks else 'N/A',
+        'chin_projection': compute_chin_projection(profile_landmarks) if profile_landmarks else 'N/A',
+        'nose_chin_distance': compute_nose_chin_distance(profile_landmarks) if profile_landmarks else 'N/A',
+        'nose_projection': compute_nose_projection(profile_landmarks) if profile_landmarks else 'N/A',
+        'bizygomatic_width': compute_bizygomatic_width(front_landmarks),
+        'bigonial_width': compute_bigonial_width(front_landmarks),
+        'facial_width_height_ratio': compute_facial_width_height_ratio(front_landmarks),
         'facial_thirds': {
             'upper': thirds[0],
             'middle': thirds[1],
             'lower': thirds[2]
         },
-        'symmetry_score': symmetry,
-        'eye_whr': eye_whr,
-        'lip_fullness': lip_fullness,
-        'jaw_prominence': jaw_prominence,
-        'skin_score': skin_score,
-        'overall_quality': overall_quality,
-        'beauty_male': beauty_male,
-        'beauty_female': beauty_female,
-        'beauty_avg': beauty_avg
+        'age': attributes.get('age', {}).get('value', 'N/A'),
+        'gender': attributes.get('gender', {}).get('value', 'N/A'),
+        'symmetry_score': compute_symmetry_score(front_landmarks),
+        'eye_whr': compute_eye_whr(front_landmarks),
+        'lip_fullness': compute_lip_fullness(front_landmarks),
+        'jaw_prominence': compute_jaw_prominence(front_landmarks),
+        'nose_width': compute_nose_width(front_landmarks),
+        'nose_length': compute_nose_length(front_landmarks),
+        'chin_projection': 'N/A',  # Placeholder, no clear calculation method
+        'beauty_male': beauty.get('male_score', 50),
+        'beauty_female': beauty.get('female_score', 50),
+        'beauty_avg': (beauty.get('male_score', 50) + beauty.get('female_score', 50)) / 2
     }
+
+    # Merge skin metrics into the main dictionary
+    all_metrics.update(skin_metrics)
+
+    return all_metrics

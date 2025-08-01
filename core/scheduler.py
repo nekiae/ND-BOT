@@ -32,8 +32,8 @@ async def check_expiring_subscriptions(bot: Bot):
 
 
 def setup_scheduler(bot: Bot):
-    """Настраивает и запускает планировщик задач."""
+    """Настраивает и возвращает планировщик задач."""
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow") # Устанавливаем часовой пояс
     # Запускать проверку каждый день в 12:00 по Москве
     scheduler.add_job(check_expiring_subscriptions, 'cron', hour=12, minute=0, args=[bot])
-    scheduler.start()
+    return scheduler

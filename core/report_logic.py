@@ -6,6 +6,7 @@ from typing import Dict, Any, Tuple
 
 from core.integrations.deepseek import get_deepseek_response
 from core.utils import sanitize_html_for_telegram
+from analyzers.lookism_metrics import compute_all as get_looksmax_metrics
 
 # --- Math utility functions ---
 
@@ -65,11 +66,7 @@ def calculate_facial_metrics(front_data: Dict[str, Any], profile_data: Dict[str,
     metrics['nasofrontal'] = 135 + headpose.get('pitch_angle', 0) # Proxy
     metrics['nasolabial'] = 95 + headpose.get('pitch_angle', 0) # Proxy
 
-    # --- Skin ---
-    skin_status = front_attributes.get('skinstatus', {})
-    metrics['skin_score'] = skin_status.get('health', 0)
-    metrics['acne_idx'] = skin_status.get('acne', 0)
-    metrics['stain_idx'] = skin_status.get('stain', 0)
+
 
     # --- General Score ---
     beauty = front_attributes.get('beauty', {})
@@ -97,9 +94,10 @@ async def generate_report_text(metrics_data: dict) -> str:
         profile_faces = metrics_data.get('profile_photo_data', {}).get('faces', [])
         profile_data = profile_faces[0] if profile_faces else {}
 
-        calculated_metrics = calculate_facial_metrics(front_data, profile_data)
-        if "error" in calculated_metrics:
-            return f"Error: {calculated_metrics['error']}"
+        # Use the single source of truth for metrics calculation
+        metrics = get_looksmax_metrics(front_data, profile_data)
+        if "error" in metrics:
+            return f"Error: {metrics['error']}"
         
         # --- AI Prompting ---
         system_prompt = """
@@ -134,7 +132,7 @@ async def generate_report_text(metrics_data: dict) -> str:
 """
 
         # Фильтруем метрики, чтобы не передавать AI пустые значения
-        metrics_string = "\n".join([f"{key}: {value}" for key, value in calculated_metrics.items() if value not in [0.0, 'N/A']])
+        metrics_string = "\n".join([f"{key}: {value}" for key, value in metrics.items() if value not in [0.0, 'N/A']])
         next_check_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
 
         user_prompt_template = """
@@ -168,29 +166,31 @@ __METRICS_BLOCK__
         # --- Динамическое создание блока метрик ---
         metric_lines = {
             'Костная база': [
-                ('• Гониальный угол', calculated_metrics.get('gonial_angle'), '°'),
-                ('• Bizygomatic / Bigonial', (calculated_metrics.get('bizygo'), calculated_metrics.get('bigonial')), ' мм'),
-                ('• FWHR', calculated_metrics.get('fwh_ratio'), '')
+                ('• Гониальный угол', metrics.get('gonial_angle'), '°'),
+                ('• Bizygomatic / Bigonial', (metrics.get('bizygo'), metrics.get('bigonial')), ' мм'),
+                ('• FWHR', metrics.get('fwh_ratio'), '')
             ],
             'Глаза': [
-                ('• Кантальный наклон', calculated_metrics.get('canthal_tilt'), '°', True),
-                ('• Interpupillary distance', calculated_metrics.get('interpupil'), ' мм'),
-                ('• Eye W/H ratio', calculated_metrics.get('eye_whr'), '')
+                ('• Кантальный наклон', metrics.get('canthal_tilt'), '°', True),
+                ('• Interpupillary distance', metrics.get('interpupil'), ' мм'),
+                ('• Eye W/H ratio', metrics.get('eye_whr'), '')
             ],
 
             'Рот / губы': [
-                ('• Ширина рта', calculated_metrics.get('mouth_width'), ' мм'),
-                ('• Общая полнота губ', calculated_metrics.get('lip_height'), ' мм'),
-                ('• Длина фильтрума', calculated_metrics.get('philtrum'), ' мм')
+                ('• Ширина рта', metrics.get('mouth_width'), ' мм'),
+                ('• Общая полнота губ', metrics.get('lip_height'), ' мм'),
+                ('• Длина фильтрума', metrics.get('philtrum'), ' мм')
             ],
             'Профиль': [
-                ('• Chin projection', calculated_metrics.get('chin_proj'), ' мм', True),
-                ('• Mandibular plane', calculated_metrics.get('mand_plane'), '°')
+                ('• Chin projection', metrics.get('chin_proj'), ' мм', True),
+                ('• Mandibular plane', metrics.get('mand_plane'), '°')
             ],
             'Кожа': [
-                ('• SkinScore', calculated_metrics.get('skin_score'), '/100'),
-                ('• Acne index', calculated_metrics.get('acne_idx'), ''),
-                ('• Stain index', calculated_metrics.get('stain_idx'), '')
+                ('• Skin Score', metrics.get('skin_score'), '/100'),
+                ('• Health (raw)', metrics.get('health_raw'), ''),
+                ('• Acne (raw)', metrics.get('acne_raw'), ''),
+                ('• Stain (raw)', metrics.get('stain_raw'), ''),
+                ('• Dark Circle (raw)', metrics.get('dark_raw'), '')
             ]
         }
 

@@ -22,7 +22,7 @@ async def yookassa_webhook_handler(request: web.Request):
             user_id = int(payment_info.get('metadata', {}).get('user_id'))
 
             if user_id:
-                await grant_subscription(user_id, analyses=SUBSCRIPTION_ANALYSES, messages=SUBSCRIPTION_MESSAGES)
+                await grant_subscription(user_id, analyses=SUBSCRIPTION_ANALYSES, messages=SUBSCRIPTION_MESSAGES, source='purchased')
 
                 new_text = (
                     f"✅ Твоя подписка успешно активирована!\n\n"

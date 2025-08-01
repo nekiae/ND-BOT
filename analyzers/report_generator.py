@@ -1,7 +1,7 @@
 import json
 from typing import Dict, Any
 
-from core.integrations.deepseek import get_ai_answer
+from core.integrations.deepseek import get_deepseek_response as get_ai_answer
 
 def get_system_prompt_from_context(file_path: str = 'context.md') -> str:
     """

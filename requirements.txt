@@ -4,7 +4,7 @@ python-dotenv==1.0.1
 
 # Database
 sqlmodel==0.0.19
-asyncpg==0.29.0
+asyncpg
 redis==5.0.4
 
 # Payments and HTTP
@@ -18,4 +18,7 @@ openai==1.12.0
 # Computer Vision
 numpy==1.26.4
 opencv-python-headless==4.9.0.80
+aiosqlite
 
+
+greenlet==3.0.3

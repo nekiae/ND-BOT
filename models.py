@@ -44,6 +44,8 @@ class User(SQLModel, table=True):
     is_ambassador: bool = Field(default=False, index=True)
     referred_by_id: Optional[int] = Field(default=None, sa_column=Column(BigInteger, ForeignKey("users.id")))
     referral_payout_pending: bool = Field(default=False, index=True)
+    subscription_source: Optional[str] = Field(default=None, index=True) # e.g., 'purchased', 'granted'
+    last_analysis_metrics: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
 
 
 class Session(SQLModel, table=True):
