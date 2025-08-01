@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker, Mapped, mapped_column
 from sqlmodel import SQLModel, select, func
 
 from models import User, Session, Task
+from sqlalchemy import JSON
 
 import logging
 logger = logging.getLogger(__name__)
@@ -36,14 +37,60 @@ async_session = sessionmaker(
 
 
 async def _ensure_referral_columns(conn):
-    """Runs raw SQL to add new referral-related columns if they are missing."""
-    sql_statements = [
-        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS is_ambassador BOOLEAN DEFAULT FALSE;",
-        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS referred_by_id BIGINT;",
-        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS referral_payout_pending BOOLEAN DEFAULT FALSE;"
-    ]
-    for stmt in sql_statements:
-        await conn.execute(text(stmt))
+    # This is a hacky way to add columns to the users table if they don't exist
+    # This is needed for backward compatibility with older versions of the database
+    columns_to_add = {
+        "is_ambassador": "BOOLEAN DEFAULT FALSE",
+        "referred_by_id": "BIGINT",
+        "referral_payout_pending": "BOOLEAN DEFAULT FALSE"
+    }
+
+    dialect_name = conn.dialect.name
+
+    if dialect_name == 'sqlite':
+        for column, definition in columns_to_add.items():
+            result = await conn.execute(text(f"PRAGMA table_info(users);"))
+            existing_columns = [row[1] for row in result.fetchall()]
+            if column not in existing_columns:
+                stmt = f"ALTER TABLE users ADD COLUMN {column} {definition};"
+                await conn.execute(text(stmt))
+    else:  # Assuming postgresql
+        for column, definition in columns_to_add.items():
+            stmt = f"ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS {column} {definition};"
+            await conn.execute(text(stmt))
+
+
+async def _ensure_last_analysis_metrics_column(conn):
+    """Ensure the last_analysis_metrics column exists."""
+    column_name = "last_analysis_metrics"
+    dialect_name = conn.dialect.name
+
+    if dialect_name == 'sqlite':
+        result = await conn.execute(text(f"PRAGMA table_info(users);"))
+        existing_columns = [row[1] for row in result.fetchall()]
+        if column_name not in existing_columns:
+            await conn.execute(text(f'ALTER TABLE users ADD COLUMN {column_name} JSON;'))
+            logger.info(f"Added '{column_name}' column to 'users' table for sqlite.")
+    else:  # Assuming postgresql
+        # For PostgreSQL, JSON type is appropriate
+        await conn.execute(text(f'ALTER TABLE users ADD COLUMN IF NOT EXISTS {column_name} JSONB;'))
+        logger.info(f"Ensured '{column_name}' column exists in 'users' table for postgresql.")
+
+
+async def _ensure_subscription_source_column(conn):
+    """Ensure the subscription_source column exists."""
+    column_name = "subscription_source"
+    dialect_name = conn.dialect.name
+
+    if dialect_name == 'sqlite':
+        result = await conn.execute(text(f"PRAGMA table_info(users);"))
+        existing_columns = [row[1] for row in result.fetchall()]
+        if column_name not in existing_columns:
+            await conn.execute(text(f'ALTER TABLE users ADD COLUMN {column_name} TEXT;'))
+            logger.info(f"Added '{column_name}' column to 'users' table for sqlite.")
+    else:  # Assuming postgresql
+        await conn.execute(text(f'ALTER TABLE users ADD COLUMN IF NOT EXISTS {column_name} VARCHAR(255);'))
+        logger.info(f"Ensured '{column_name}' column exists in 'users' table for postgresql.")
 
 
 async def _ensure_bigint_columns(conn):
@@ -72,6 +119,9 @@ async def create_db_and_tables() -> None:
         await _ensure_referral_columns(conn)
         # Ensure critical ID columns are BIGINT to fit Telegram IDs
         await _ensure_bigint_columns(conn)
+        # Ensure the new metrics column exists
+        await _ensure_last_analysis_metrics_column(conn)
+        await _ensure_subscription_source_column(conn)
         logger.info("Database setup complete")
 
 
@@ -144,16 +194,35 @@ async def decrement_user_messages(user_id: int):
             user.messages_left -= 1
             await session.commit()
 
-async def decrement_user_analyses(user_id: int):
+async def save_user_metrics(user_id: int, metrics: dict) -> None:
+    """Saves the latest analysis metrics for a user."""
+    async with async_session() as session:
+        async with session.begin():
+            user = await session.get(User, user_id)
+            if user:
+                user.last_analysis_metrics = metrics
+                await session.commit()
+                logger.info(f"Saved latest analysis metrics for user {user_id}")
+
+
+async def decrement_user_analyses(user_id: int) -> bool:
     """Уменьшает количество оставшихся анализов пользователя на 1."""
     async with async_session() as session:
         user = await session.get(User, user_id)
         if user and user.analyses_left > 0:
             user.analyses_left -= 1
             await session.commit()
+            return True
+        return False
 
 
-async def give_subscription_to_user(user_id: int, days: int = 30, analyses: int = 2, messages: int = 200) -> None:
+async def give_subscription_to_user(
+    user_id: int, 
+    days: int = 30, 
+    analyses: int = 2, 
+    messages: int = 200, 
+    source: str = 'granted'  # 'granted' or 'purchased'
+) -> None:
     """Grants or extends a subscription and handles referral logic."""
     async with async_session() as session:
         async with session.begin():
@@ -169,8 +238,9 @@ async def give_subscription_to_user(user_id: int, days: int = 30, analyses: int 
                 # Иначе, устанавливаем новую дату окончания
                 user.is_active_until = datetime.now(timezone.utc) + timedelta(days=days)
             
-            user.analyses_left += analyses
-            user.messages_left += messages
+            user.analyses_left = (user.analyses_left or 0) + analyses
+            user.messages_left = (user.messages_left or 0) + messages
+            user.subscription_source = source
 
             # Handle referral logic: if user was referred and this is their first payment, mark for payout
             if user.referred_by_id and not user.referral_payout_pending:
@@ -196,7 +266,27 @@ async def get_all_users() -> list[User]:
     """Получает всех пользователей из базы данных."""
     async with async_session() as session:
         result = await session.execute(select(User))
-        return list(result.scalars().all())
+        return result.scalars().all()
+
+
+async def get_subscribed_users() -> list[User]:
+    """Получает всех пользователей с активной подпиской."""
+    now = datetime.now(timezone.utc)
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.is_active_until > now)
+        )
+        return result.scalars().all()
+
+
+async def get_unsubscribed_users() -> list[User]:
+    """Получает всех пользователей без активной подписки."""
+    now = datetime.now(timezone.utc)
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where((User.is_active_until == None) | (User.is_active_until <= now))
+        )
+        return result.scalars().all()
 
 
 async def get_user_by_username(username: str) -> User | None:
@@ -234,9 +324,23 @@ async def get_all_ambassadors() -> list[User]:
 
 
 async def get_referral_stats(ambassador_id: int) -> dict:
-    """Gets referral statistics for a specific ambassador."""
+    """Returns referral statistics for a specific ambassador.
+
+    Keys:
+        total_referred:  Число пользователей, пришедших по ссылке (created with referred_by_id)
+        pending_payouts: Число рефералов, у которых оплатa подтверждена и ждёт выплаты
+        total_paid_referrals: Число рефералов с любой активной подпиской (для общей аналитики)
+    """
     async with async_session() as session:
-        # Count referrals pending payout
+        # 1. Всего пришедших (по ссылке)
+        total_ref_result = await session.execute(
+            select(func.count(User.id)).where(
+                User.referred_by_id == ambassador_id
+            )
+        )
+        total_referred = total_ref_result.scalar_one()
+
+        # 2. Ожидают выплаты (pending)
         pending_result = await session.execute(
             select(func.count(User.id)).where(
                 User.referred_by_id == ambassador_id,
@@ -245,7 +349,7 @@ async def get_referral_stats(ambassador_id: int) -> dict:
         )
         pending_count = pending_result.scalar_one()
 
-        # Count total paid referrals (have an active subscription)
+        # 3. Всего оплативших (имеют активную подписку)
         total_paid_result = await session.execute(
             select(func.count(User.id)).where(
                 User.referred_by_id == ambassador_id,
@@ -255,8 +359,9 @@ async def get_referral_stats(ambassador_id: int) -> dict:
         total_paid_count = total_paid_result.scalar_one()
 
         return {
+            "total_referred": total_referred,
             "pending_payouts": pending_count,
-            "total_paid_referrals": total_paid_count
+            "total_paid_referrals": total_paid_count,
         }
 
 
@@ -298,32 +403,41 @@ async def get_bot_statistics() -> dict:
         }
 
 async def get_subscription_stats() -> dict:
-    """Returns total active paying subs and new paid subs in last 24h/48h/7d."""
+    """Returns detailed subscription statistics, broken down by source."""
     now = datetime.now(timezone.utc)
     async with async_session() as session:
-        # Total active
-        total_paid_q = await session.execute(
-            select(func.count(User.id)).where(User.is_active_until > now)
-        )
-        total_paid = total_paid_q.scalar_one()
+        # Base query for all active subscriptions
+        active_subs_query = select(User).where(User.is_active_until > now)
+        active_subs_result = await session.execute(active_subs_query)
+        active_subs = active_subs_result.scalars().all()
 
-        # Helpers
-        async def _count_since(ts):
-            result = await session.execute(
-                select(func.count(User.id)).where(
-                    User.is_active_until > now,
-                    User.updated_at >= ts,
-                )
-            )
-            return result.scalar_one()
+        total_active = len(active_subs)
+        total_purchased = sum(1 for u in active_subs if u.subscription_source == 'purchased')
+        total_granted = sum(1 for u in active_subs if u.subscription_source == 'granted')
+        # For legacy users who got a sub before this field was added
+        total_other = total_active - total_purchased - total_granted
 
-        # New in the last periods
-        new_24h = await _count_since(now - timedelta(hours=24))
-        new_48h = await _count_since(now - timedelta(hours=48))
-        new_7d = await _count_since(now - timedelta(days=7))
+        # New users in the last periods (based on when their sub was last updated)
+        def _count_new_since(ts):
+            count = 0
+            for u in active_subs:
+                if not u.updated_at:
+                    continue
+                # Make updated_at timezone-aware before comparing
+                updated_at_aware = u.updated_at.replace(tzinfo=timezone.utc) if u.updated_at.tzinfo is None else u.updated_at
+                if updated_at_aware >= ts:
+                    count += 1
+            return count
+
+        new_24h = _count_new_since(now - timedelta(hours=24))
+        new_48h = _count_new_since(now - timedelta(hours=48))
+        new_7d = _count_new_since(now - timedelta(days=7))
 
         return {
-            "total_paying": total_paid,
+            "total_active": total_active,
+            "total_purchased": total_purchased,
+            "total_granted": total_granted,
+            "total_other": total_other,
             "new_24h": new_24h,
             "new_48h": new_48h,
             "new_7d": new_7d,
