@@ -5,10 +5,10 @@
 set -euo pipefail
 
 # Запускаем воркер в фоне
-python worker.py &
+python -u worker.py > /proc/1/fd/1 2>&1 &
 WORKER_PID=$!
 
-echo "Worker запущен с PID $WORKER_PID"
+echo "[start_all] Worker запущен с PID $WORKER_PID"
 
 # Запускаем основной бот (aiohttp web + aiogram)
-python main.py
+python -u main.py
