@@ -1,2 +1,1 @@
-web: python main.py
-worker: python worker.py
+web: bash start_all.sh
