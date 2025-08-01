@@ -31,4 +31,4 @@ COPY . .
 EXPOSE 8000
 
 # Run the bot
-CMD ["python", "main.py"]
+CMD ["sh", "-c", "python -u worker.py & python -u main.py"]
