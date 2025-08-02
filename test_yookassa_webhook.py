@@ -19,7 +19,7 @@ def create_test_payment_notification(user_id):
             "id": f"test_{uuid.uuid4()}",
             "status": "succeeded",
             "amount": {
-                "value": "990.00",
+                "value": "2000.00",
                 "currency": "RUB"
             },
             "description": f"Тестовая подписка для user_id:{user_id}",

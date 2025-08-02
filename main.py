@@ -214,7 +214,7 @@ async def process_payment_start(message: types.Message):
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(text="💰 ОПЛАТИТЬ", callback_data="pay"))
     await message.answer(
-        "📜 Подписка: 990Р / месяц\n"
+        "📜 Подписка: 2000Р / месяц\n"
         "Включает 2 полных анализа и 200 сообщений-консультаций.\n\n"
         "💲 Нажми кнопку ОПЛАТИТЬ, чтобы активировать доступ.",
         reply_markup=keyboard.as_markup()
@@ -226,7 +226,7 @@ async def pay_button_callback(callback: types.CallbackQuery, bot: Bot):
     bot_info = await bot.get_me()
     bot_username = bot_info.username
 
-    payment = create_yookassa_payment(user_id=user_id, amount="990.00", bot_username=bot_username)
+    payment = create_yookassa_payment(user_id=user_id, amount="2000.00", bot_username=bot_username)
     if payment:
         await callback.message.answer(
             "Ваша ссылка на оплату готова. Нажмите на кнопку ниже, чтобы перейти к оплате.",
