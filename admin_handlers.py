@@ -14,11 +14,11 @@ from core.states import AdminAmbassador, AdminStates, IsAdminFilter
 from database import (
     confirm_referral_payouts, get_all_ambassadors,
     get_all_users, get_bot_statistics,
-    get_pending_payouts_count, get_referral_stats,
+    get_pending_payouts_count, get_referral_stats, get_bulk_referral_stats,
     get_subscription_stats, get_user_by_username,
     get_user_detailed_stats, give_subscription_to_user,
     revoke_subscription, set_ambassador_status,
-    get_subscribed_users, get_unsubscribed_users # For targeted broadcast
+    get_subscribed_users, get_unsubscribed_users  # For targeted broadcast
 )
 
 logger = logging.getLogger(__name__)
@@ -157,19 +157,28 @@ async def list_ambassadors(callback: types.CallbackQuery, should_answer: bool = 
     response_text = "<b>👑 Список Амбассадоров:</b>\n\n"
     keyboard = InlineKeyboardBuilder()
 
+    # Получаем статистику одним запросом для оптимизации
+    stats_map = await get_bulk_referral_stats([a.id for a in ambassadors])
+
     for amb in ambassadors:
-        stats = await get_referral_stats(amb.id)
+        stats = stats_map.get(amb.id, {})
         username = f"@{amb.username}" if amb.username else f"ID: {amb.id}"
+        pending = stats.get("pending_payouts", 0)
+        paid = stats.get("total_paid_referrals", 0)
+        total_clicks = stats.get("total_referred", 0)
+
         response_text += (
             f"<b>{username}</b>\n"
-            f"  - Ожидают выплаты: <code>{stats['pending_payouts']}</code>\n"
-            f"  - Всего оплативших: <code>{stats['total_paid_referrals']}</code>\n"
+            f"  - Переходов: <code>{total_clicks}</code>\n"
+            f"  - Оплативших: <code>{paid}</code>\n"
+            f"  - Ожидают выплаты: <code>{pending}</code>\n"
         )
+
         # Add a button to reset pending payouts if there are any
-        if stats['pending_payouts'] > 0:
+        if pending > 0:
             response_text += f"  - <code><a href='tg://user?id={amb.id}'>Сбросить выплаты</a></code>\n\n"
             keyboard.add(InlineKeyboardButton(
-                text=f"Сбросить {stats['pending_payouts']} для {username}",
+                text=f"Сбросить {pending} для {username}",
                 callback_data=f"confirm_payouts_{amb.id}"
             ))
         else:

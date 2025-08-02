@@ -365,6 +365,64 @@ async def get_referral_stats(ambassador_id: int) -> dict:
         }
 
 
+async def get_bulk_referral_stats(ambassador_ids: list[int]) -> dict[int, dict]:
+    """Returns referral statistics for many ambassadors in one pass.
+
+    The returned dict is keyed by ambassador_id and each value contains:
+        total_referred        – users that came with this referral code
+        pending_payouts       – first-time payers awaiting payout
+        total_paid_referrals  – users with any active subscription
+    Designed to minimise DB queries when there are many ambassadors.
+    """
+    if not ambassador_ids:
+        return {}
+
+    # Initialise result structure
+    stats: dict[int, dict] = {
+        amb_id: {
+            "total_referred": 0,
+            "pending_payouts": 0,
+            "total_paid_referrals": 0,
+        }
+        for amb_id in ambassador_ids
+    }
+
+    async with async_session() as session:
+        # 1. Total referred
+        result = await session.execute(
+            select(User.referred_by_id, func.count(User.id)).where(
+                User.referred_by_id.in_(ambassador_ids)
+            ).group_by(User.referred_by_id)
+        )
+        for amb_id, cnt in result.all():
+            if amb_id in stats:
+                stats[amb_id]["total_referred"] = cnt
+
+        # 2. Pending payouts
+        result = await session.execute(
+            select(User.referred_by_id, func.count(User.id)).where(
+                User.referred_by_id.in_(ambassador_ids),
+                User.referral_payout_pending.is_(True),
+            ).group_by(User.referred_by_id)
+        )
+        for amb_id, cnt in result.all():
+            if amb_id in stats:
+                stats[amb_id]["pending_payouts"] = cnt
+
+        # 3. Total paid
+        result = await session.execute(
+            select(User.referred_by_id, func.count(User.id)).where(
+                User.referred_by_id.in_(ambassador_ids),
+                User.is_active_until.is_not(None),
+            ).group_by(User.referred_by_id)
+        )
+        for amb_id, cnt in result.all():
+            if amb_id in stats:
+                stats[amb_id]["total_paid_referrals"] = cnt
+
+    return stats
+
+
 async def confirm_referral_payouts(ambassador_id: int) -> int:
     """Resets the pending payout status for an ambassador's referrals."""
     async with async_session() as session:
